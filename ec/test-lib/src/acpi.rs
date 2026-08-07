@@ -826,7 +826,7 @@ impl Acpi {
         if arg.type_ != AcpiArgumentType::Buffer as u16 {
             return Err(Error::UnexpectedArgumentType(arg.type_));
         }
-        Ok(arg.data.clone())
+        Ok(ucsi::normalize_acpi_response(&arg.data)?.to_vec())
     }
 }
 
