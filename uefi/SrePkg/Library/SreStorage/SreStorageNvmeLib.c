@@ -372,6 +372,7 @@ NvmeSetLockState (
   IN  NVME_LOCK_STATE LockState
 )
 {
+  EFI_STATUS  Status;
   UINT32  Shift;
   UINT32  Config;
 
@@ -380,7 +381,27 @@ NvmeSetLockState (
   }
 
   Shift  = (PartitionIndex == SrePartition_A) ? SRE_BPWPS_BP0_SHIFT : SRE_BPWPS_BP1_SHIFT;
-  Config = ((UINT32)LockState & SRE_BPWPS_FIELD_MASK) << Shift;
+
+  EFI_NVM_EXPRESS_COMMAND  GetCmd = {
+    .Cdw0.Opcode = NVME_ADMIN_GET_FEATURES_CMD,
+    .Cdw10       = SRE_NVME_FID_BP_WRITE_PROTECTION_CFG,
+    .Flags       = CDW10_VALID
+  };
+  EFI_NVM_EXPRESS_COMPLETION                GetCompletion = {0};
+  EFI_NVM_EXPRESS_PASS_THRU_COMMAND_PACKET  GetPacket     = {
+    .CommandTimeout = 2ULL * 10000000ULL,
+    .QueueType      = NVME_ADMIN_QUEUE,
+    .NvmeCmd        = &GetCmd,
+    .NvmeCompletion = &GetCompletion
+  };
+
+  Status = ExecuteNvmePassThru (&GetPacket);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Config  = GetCompletion.DW0 & ~(SRE_BPWPS_FIELD_MASK << Shift);
+  Config |= ((UINT32)LockState & SRE_BPWPS_FIELD_MASK) << Shift;
 
   EFI_NVM_EXPRESS_COMMAND  Cmd = {
     .Cdw0.Opcode = NVME_ADMIN_SET_FEATURES_CMD,
