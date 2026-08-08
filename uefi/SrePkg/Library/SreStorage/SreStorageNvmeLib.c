@@ -55,9 +55,11 @@
 #define SRE_NVME_LPA_LPEDS                    0x04  // LPA bit 2: Log Page Extended Data Support
 
 //
-// Default to 1 page if granularity reported by FWUG is 0 (no info) or 0xFF (no restriction)
+// Default used when granularity reported by FWUG is 0 (no info) or 0xFF (no restriction)
 //
 #define SRE_NVME_DEFAULT_GRANULARITY          1
+#define SRE_NVME_FWUG_NO_INFO                 0x00
+#define SRE_NVME_FWUG_NO_RESTRICTION          0xFF
 
 //
 // Boot Partition geometry via the controller's PCI BAR0 MMIO registers
@@ -221,9 +223,7 @@ ExecuteNvmePassThru (
 //
 // Read the fields the library needs from Identify Controller (CNS=01h) in a single command
 //
-// [out] PageCount -      Write granularity in EFI pages: the Firmware Update
-//                        Granularity (FWUG), or 1 page when FWUG reports 0x00
-//                        (no information) or 0xFF (no restriction).
+// [out] PageCount -      Write granularity in EFI pages
 // [out] LpedsSupported - TRUE if the controller supports the Get Log Page
 //                        extended Log Page Offset (CDW12/CDW13) and 16-bit
 //                        Number of Dwords fields (LPA bit 2, LPEDS). The boot-
@@ -237,8 +237,6 @@ IdentifyController (
 {
   EFI_STATUS  Status;
   UINT8       *IdCtrl;
-  UINT8       Fwug;
-  UINT8       Lpa;
 
   if (GranularityPageCount == NULL || LpedsSupported == NULL) {
     return EFI_INVALID_PARAMETER;
@@ -264,11 +262,9 @@ IdentifyController (
 
   Status = ExecuteNvmePassThru (&Packet);
   if (!EFI_ERROR (Status)) {
-    IdCtrl          = (UINT8 *)Packet.TransferBuffer;
-    Fwug            = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_FWUG];
-    Lpa             = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_LPA];
-    *GranularityPageCount = ((Fwug == 0x00) || (Fwug == 0xFF)) ? SRE_NVME_DEFAULT_GRANULARITY : Fwug;
-    *LpedsSupported = (Lpa & SRE_NVME_LPA_LPEDS) != 0;
+    IdCtrl                = (UINT8 *)Packet.TransferBuffer;
+    *GranularityPageCount = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_FWUG];
+    *LpedsSupported       = (IdCtrl[SRE_NVME_ID_CTRL_OFFSET_LPA] & SRE_NVME_LPA_LPEDS) != 0;
   }
 
   FreeAlignedPages (Packet.TransferBuffer, EFI_SIZE_TO_PAGES (SRE_NVME_IDENTIFY_BUFFER_SIZE));
@@ -291,6 +287,7 @@ SreStorageLibConstructor (
   UINT32 Bpinfo;
   UINT8 GranularityPageCount;
   BOOLEAN LpedsSupported;
+  UINTN BpSize;
 
   // Execute a connect command to the storage device
   Status = ConnectStorageDevice (&Handle);
@@ -324,7 +321,7 @@ SreStorageLibConstructor (
     return EFI_SUCCESS;
   }
 
-  // Retrieve the write granularity and boot-partition read path support
+  // Set global block size
   Status = IdentifyController (&GranularityPageCount, &LpedsSupported);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Failed to identify controller (%r), SRE not supported\n", Status));
@@ -334,24 +331,27 @@ SreStorageLibConstructor (
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Log Page Extended Data Support (LPA.LPEDS); boot-partition read unsupported\n"));
     return EFI_SUCCESS;
   }
+  mBlockSize = ((GranularityPageCount == SRE_NVME_FWUG_NO_INFO) || (GranularityPageCount == SRE_NVME_FWUG_NO_RESTRICTION))
+    ? EFI_PAGE_SIZE * SRE_NVME_DEFAULT_GRANULARITY
+    : EFI_PAGE_SIZE * GranularityPageCount;
 
-  // Set global block size and count
-  mBlockSize = EFI_PAGE_SIZE * GranularityPageCount;
-  Status = mPciIo->Mem.Read (mPciIo, EfiPciIoWidthUint32, SRE_NVME_BAR0_INDEX, NVME_BPINFO_OFFSET, 1, &Bpinfo);
+  // Set global block count
+  Status = mPciIo->Mem.Read (mPciIo, EfiPciIoWidthUint32, SRE_NVME_BAR0_INDEX, NVME_BPINFO_OFFSET, 1, &BpInfo);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Failed to read NVME_BPINFO register - %r\n", Status));
     return EFI_SUCCESS;
   }
-  Bpinfo = Bpinfo & SRE_NVME_BPINFO_BPSZ_MASK;
-  if (Bpinfo == 0) {
+  BpInfo = BpInfo & SRE_NVME_BPINFO_BPSZ_MASK;
+  if (BpInfo == 0) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Undefined boot partition info register value (0x00), SRE not supported\n"));
     return EFI_SUCCESS;
   }
-  mBlockCount = (UINTN)Bpinfo * SIZE_128KB / mBlockSize;
-  if (mBlockCount == 0) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Block size 0x%x exceeds boot partition size 0x%x, SRE not supported\n", mBlockSize, (UINTN)Bpinfo * SIZE_128KB));
+  BpSize = (UINTN)BpInfo * SIZE_128KB;
+  if (BpSize < mBlockSize) {
+    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Block size reported by NVME exceeds boot partition size, SRE not supported\n"));
     return EFI_SUCCESS;
   }
+  mBlockCount = BpSize / mBlockSize;
 
   // Supported
   mIsSupported = TRUE;
