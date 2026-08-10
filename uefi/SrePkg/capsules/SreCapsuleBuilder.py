@@ -4,12 +4,9 @@
 #
 import argparse
 import datetime
-from itertools import product
 import os
 import struct
-import subprocess
 import uuid
-import zipfile
 
 from edk2toollib.uefi.edk2.fmp_payload_header import FmpPayloadHeaderClass
 from edk2toollib.uefi.fmp_auth_header import FmpAuthHeaderClass
@@ -35,7 +32,6 @@ def pack_image_header_v3(type_guid, image_index, payload_len, capsule_support):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--wim-path")                                   # input WIM path
-    p.add_argument("--signer-path")                                # AutosignConsole.exe path
     p.add_argument("--capsule-version", type=lambda v: int(v, 0))  # FMP / ESRT / capsule version
     p.add_argument("--lsv", type=lambda v: int(v, 0))              # lowest supported version
     p.add_argument("--monotonic-count", type=int)                  # anti-rollback counter
@@ -62,31 +58,12 @@ def create_payload(args, build_artifacts_dir):
 
 def sign_payload(args, payload_path):
 
-    build_artifacts_dir = os.path.dirname(payload_path)
-    signed_path = os.path.join(build_artifacts_dir, "payload.signed.bin")
+    # TODO: The OEM must implement its process for signing the binary data at
+    # payload_path with a private key. The implementation may use args for OEM-
+    # specific configuration and must return the path to the resulting signature
+    # or certificate data accepted by FmpAuthHeaderClass.AuthInfo.cert_data.
 
-    result_file = os.path.join(build_artifacts_dir, "ResultFile.txt")
-    with open(result_file, "w") as f:
-        f.write("SRE capsule signing request.")
-
-    signer_args = [
-        args.signer_path, "/s",                 # submit and wait for approval
-        "-s", r"fareast\frxu",                  # Autosigner service account
-        "-t", "DO_NOT_TRUST_TEST_900_MAA",      # selects the DEV/test signing key
-        "-p", "FUTURE PRODUCT",                 # Ambiguous product name
-        "-b", "SRE capsule FW (leaf) signing",  # Justification for the signing request
-        "-r", result_file,                      # Where results are stored
-        "-f", payload_path,                     # Input payload to sign
-        "-v", "0.0.0.1",                        # Signing request version label only
-        "-d", "Dev Test SRE Image",             # Description of the firmware being signed
-        "-path", signed_path,                   # Output path
-    ]
-
-    print("Waiting for signing process...")
-    if subprocess.run(signer_args).returncode != 0:
-        raise RuntimeError("signer.exe failed")
-
-    return signed_path
+    raise NotImplementedError("OEM payload signing is not implemented")
 
 def create_signed_payload(args, signed_path):
     build_artifacts_dir = os.path.dirname(signed_path)
@@ -149,44 +126,19 @@ def create_inf(args, build_dir):
         f.write(str(inf_file))
     return inf_path
 
+def sign_catalog(args, catalog_path):
+
+    # TODO: The OEM must implement its Windows catalog-signing process. The
+    # implementation may use args for OEM-specific configuration and must return
+    # the path to the signed catalog.
+
+    raise NotImplementedError("OEM catalog signing is not implemented")
+
 def create_cat(args, build_dir):
     # Generate the unsigned catalog from the .inf + .cap using the WDK's Inf2Cat (via edk2toolext)
     cat_path = capsule_helper.create_cat_file({"fw_name": "SreRecovery", "arch": "amd64"}, build_dir)
-
-    # Sign the catalog (Authenticode) with the OS driver signing key
-    signed_cat_path = os.path.join(build_dir, "SreRecovery.signed.cat")
-    result_file = os.path.join(build_dir, "CatResultFile.txt")
-    with open(result_file, "w") as f:
-        f.write("SRE catalog signing request.")
-
-    signer_args = [
-        args.signer_path, "/s",                          # submit and wait for approval
-        "-s", r"fareast\frxu",                           # Autosigner service account
-        "-t", "DO_NOT_TRUST_TEST_ESRP_OS_DRIVER_SIGNER", # OS (catalog) signing key
-        "-p", "FUTURE PRODUCT",                          # Ambiguous product name
-        "-b", "SRE capsule catalog (OS) signing",        # Justification for the signing request
-        "-r", result_file,                               # Where results are stored
-        "-f", cat_path,                                  # Input catalog to sign
-        "-v", "0.0.0.1",                                 # Signing request version label only
-        "-d", "Dev Test SRE Catalog",                    # Description of the catalog being signed
-        "-path", signed_cat_path,                        # Output path
-    ]
-
-    print("Waiting for catalog signing process...")
-    if subprocess.run(signer_args).returncode != 0:
-        raise RuntimeError("catalog signer.exe failed")
-
-    # AutosignConsole wraps OS-signed output in a ZIP; extract the actual .cat
-    if zipfile.is_zipfile(signed_cat_path):
-        with zipfile.ZipFile(signed_cat_path, "r") as zf:
-            cat_name = next(n for n in zf.namelist() if n.endswith(".cat"))
-            zf.extract(cat_name, build_dir)
-            extracted = os.path.join(build_dir, cat_name)
-            if extracted != cat_path:
-                os.replace(extracted, cat_path)
-        os.remove(signed_cat_path)
-    else:
-        # Replace the unsigned catalog so the INF's CatalogFile=SreRecovery.cat matches the signed file
+    signed_cat_path = sign_catalog(args, cat_path)
+    if signed_cat_path != cat_path:
         os.replace(signed_cat_path, cat_path)
     return cat_path
 

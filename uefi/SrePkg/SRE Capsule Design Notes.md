@@ -14,17 +14,27 @@ a RAM drive, then mounted from the BDS to launch the SRE image.  This payload bi
   .\Application\BpRecoveryLoader\BuildBpFatImage.ps1 -WimFile .\ValidationOS.wim -OutImage .\ValidationFat32Partition.img -SizeBytes 1GB
   ```
 
-And the capsule is created from that image by the builder in the `capsules` sub-directory by running the
-"capsules\SreCapsuleBuilder.cmd" script:
+Before using the capsule builder, the OEM must implement the two signing TODOs in
+`capsules\SreCapsuleBuilder.py`:
+
+- `sign_payload()` must sign the binary data at `payload_path` with the OEM's private key and return the path to the
+  signature or certificate data consumed by the FMP authentication header.
+- `sign_catalog()` must apply the OEM's Windows catalog-signing process to `catalog_path` and return the path to the
+  signed catalog.
+
+The capsule can then be created by invoking the Python builder directly and supplying the product-specific values:
 
   ```terminal
-  .\capsules\SreCapsuleBuilder.cmd
+  py .\capsules\SreCapsuleBuilder.py `
+    --wim-path .\ValidationFat32Partition.img `
+    --capsule-version <version> `
+    --lsv <lowest-supported-version> `
+    --monotonic-count <count> `
+    --esrt-guid <guid>
   ```
 
-NOTE: `SreCapsuleBuilder.cmd` resolves its Python script, the `ValidationFat32Partition.img` payload, and the
-      `AutosignConsole.exe` signer relative to its own location, so it runs from any current directory.  It expects the
-      FAT image next to the WIM in the `SrePkg` directory, and the SRE image WIM named `ValidationOS.wim`.  The capsule
-      version, LSV, monotonic count, and ESRT GUID are baked into the .cmd.
+The capsule version, lowest supported version, monotonic count, ESRT GUID, signing credentials, and signing service
+configuration are OEM-specific and are intentionally not stored in this repository.
 
 ## ESRT Versioning
 
