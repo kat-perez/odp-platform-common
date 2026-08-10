@@ -50,8 +50,10 @@
 // need at fixed byte offsets (NVMe Base Spec, Identify Controller data).
 //
 #define SRE_NVME_IDENTIFY_BUFFER_SIZE         4096
+#define SRE_NVME_ID_CTRL_OFFSET_BPCAP         102   // 1 byte: Boot Partition Capabilities
 #define SRE_NVME_ID_CTRL_OFFSET_FWUG          319   // 1 byte: Firmware Update Granularity
 #define SRE_NVME_ID_CTRL_OFFSET_LPA           261   // 1 byte: Log Page Attributes
+#define SRE_NVME_BPCAP_SFBPWPS                BIT2  // Set Features Boot Partition Write Protection Support
 #define SRE_NVME_LPA_LPEDS                    0x04  // LPA bit 2: Log Page Extended Data Support
 
 //
@@ -81,11 +83,9 @@
 // (NVMe Base Spec 2.1 §5.1.25.1.32, Boot Partition Write Protection Config):
 //
 typedef enum NVME_LOCK_STATE {
-  NoChangeRequested          = 0,
   WriteUnlocked              = 0x1, // 001b
   WriteLocked                = 0x2, // 010b Write Locked
-  WriteLockedUntilPowerCycle = 0x3, // 011b Write Locked Until Power Cycle
-  WriteProtectionByRpmb      = 0x4  // 100b Write Protection controlled by RPMB
+  WriteLockedUntilPowerCycle = 0x3  // 011b Write Locked Until Power Cycle
 } NVME_LOCK_STATE;
 
 
@@ -213,6 +213,7 @@ ExecuteNvmePassThru (
 // Read the fields the library needs from Identify Controller (CNS=01h) in a single command
 //
 // [out] FirmwareUpdateGranularity - Write granularity as reported by the identify command
+// [out] SetLockStateSupported      - TRUE if Set Features may configure Boot Partition write protection
 // [out] LpedsSupported            - TRUE if the controller supports the Get Log Page extended Log Page Offset
 //                                   (CDW12/CDW13) and 16-bit number of Dwords fields (LPA bit 2, LPEDS). The boot-
 //                                   partition read path depends on these fields.
@@ -221,12 +222,13 @@ EFI_STATUS
 EFIAPI
 IdentifyController (
   OUT UINT8   *FirmwareUpdateGranularity,
+  OUT BOOLEAN *SetLockStateSupported,
   OUT BOOLEAN *LpedsSupported)
 {
   EFI_STATUS  Status;
   UINT8       *IdCtrl;
 
-  if (FirmwareUpdateGranularity == NULL || LpedsSupported == NULL) {
+  if (FirmwareUpdateGranularity == NULL || SetLockStateSupported == NULL || LpedsSupported == NULL) {
     return EFI_INVALID_PARAMETER;
   }
 
@@ -252,6 +254,7 @@ IdentifyController (
   if (!EFI_ERROR (Status)) {
     IdCtrl                     = (UINT8 *)Packet.TransferBuffer;
     *FirmwareUpdateGranularity = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_FWUG];
+    *SetLockStateSupported     = (IdCtrl[SRE_NVME_ID_CTRL_OFFSET_BPCAP] & SRE_NVME_BPCAP_SFBPWPS) != 0;
     *LpedsSupported            = (IdCtrl[SRE_NVME_ID_CTRL_OFFSET_LPA] & SRE_NVME_LPA_LPEDS) != 0;
   }
 
@@ -274,6 +277,7 @@ SreStorageLibConstructor (
   NVME_CAP Cap;
   UINT32 BpInfo;
   UINT8 FirmwareUpdateGranularity;
+  BOOLEAN SetLockStateSupported;
   BOOLEAN LpedsSupported;
   UINTN BpSize;
 
@@ -310,13 +314,17 @@ SreStorageLibConstructor (
   }
 
   // Set global block size
-  Status = IdentifyController (&FirmwareUpdateGranularity, &LpedsSupported);
+  Status = IdentifyController (&FirmwareUpdateGranularity, &SetLockStateSupported, &LpedsSupported);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Failed to identify controller (%r), SRE not supported\n", Status));
     return EFI_SUCCESS;
   }
   if (!LpedsSupported) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Log Page Extended Data Support (LPA.LPEDS); boot-partition read unsupported\n"));
+    return EFI_SUCCESS;
+  }
+  if (!SetLockStateSupported) {
+    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Set Features Boot Partition Write Protection Support (BPCAP.SFBPWPS)\n"));
     return EFI_SUCCESS;
   }
   mBlockSize = ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) || (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
@@ -360,36 +368,17 @@ NvmeSetLockState (
   IN  NVME_LOCK_STATE LockState
 )
 {
-  EFI_STATUS  Status;
   UINT32  Shift;
   UINT32  Config;
 
-  if (PartitionIndex > SrePartition_B) {
+  if (PartitionIndex > SrePartition_B || LockState < WriteUnlocked || LockState > WriteLockedUntilPowerCycle) {
     return EFI_INVALID_PARAMETER;
   }
 
+  // A zero BPxWPS field means "change in state not requested" for that
+  // partition, so only populate the field for the target partition.
   Shift  = (PartitionIndex == SrePartition_A) ? SRE_BPWPS_BP0_SHIFT : SRE_BPWPS_BP1_SHIFT;
-
-  EFI_NVM_EXPRESS_COMMAND  GetCmd = {
-    .Cdw0.Opcode = NVME_ADMIN_GET_FEATURES_CMD,
-    .Cdw10       = SRE_NVME_FID_BP_WRITE_PROTECTION_CFG,
-    .Flags       = CDW10_VALID
-  };
-  EFI_NVM_EXPRESS_COMPLETION                GetCompletion = {0};
-  EFI_NVM_EXPRESS_PASS_THRU_COMMAND_PACKET  GetPacket     = {
-    .CommandTimeout = 2ULL * 10000000ULL,
-    .QueueType      = NVME_ADMIN_QUEUE,
-    .NvmeCmd        = &GetCmd,
-    .NvmeCompletion = &GetCompletion
-  };
-
-  Status = ExecuteNvmePassThru (&GetPacket);
-  if (EFI_ERROR (Status)) {
-    return Status;
-  }
-
-  Config  = GetCompletion.DW0 & ~(SRE_BPWPS_FIELD_MASK << Shift);
-  Config |= ((UINT32)LockState & SRE_BPWPS_FIELD_MASK) << Shift;
+  Config = ((UINT32)LockState & SRE_BPWPS_FIELD_MASK) << Shift;
 
   EFI_NVM_EXPRESS_COMMAND  Cmd = {
     .Cdw0.Opcode = NVME_ADMIN_SET_FEATURES_CMD,
