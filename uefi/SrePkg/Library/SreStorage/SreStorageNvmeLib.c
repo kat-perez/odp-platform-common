@@ -60,6 +60,7 @@
 #define SRE_NVME_DEFAULT_GRANULARITY          1
 #define SRE_NVME_FWUG_NO_INFO                 0x00
 #define SRE_NVME_FWUG_NO_RESTRICTION          0xFF
+#define SRE_NVME_FWUG_RESOLUTION              SIZE_4KB
 
 //
 // Boot Partition geometry via the controller's PCI BAR0 MMIO registers
@@ -223,22 +224,21 @@ ExecuteNvmePassThru (
 //
 // Read the fields the library needs from Identify Controller (CNS=01h) in a single command
 //
-// [out] PageCount -      Write granularity in EFI pages
-// [out] LpedsSupported - TRUE if the controller supports the Get Log Page
-//                        extended Log Page Offset (CDW12/CDW13) and 16-bit
-//                        Number of Dwords fields (LPA bit 2, LPEDS). The boot-
-//                        partition read path depends on these fields.
+// [out] FirmwareUpdateGranularity - Write granularity as reported by the identify command
+// [out] LpedsSupported            - TRUE if the controller supports the Get Log Page extended Log Page Offset
+//                                   (CDW12/CDW13) and 16-bit number of Dwords fields (LPA bit 2, LPEDS). The boot-
+//                                   partition read path depends on these fields.
 //
 EFI_STATUS
 EFIAPI
 IdentifyController (
-  OUT UINT8   *GranularityPageCount,
+  OUT UINT8   *FirmwareUpdateGranularity,
   OUT BOOLEAN *LpedsSupported)
 {
   EFI_STATUS  Status;
   UINT8       *IdCtrl;
 
-  if (GranularityPageCount == NULL || LpedsSupported == NULL) {
+  if (FirmwareUpdateGranularity == NULL || LpedsSupported == NULL) {
     return EFI_INVALID_PARAMETER;
   }
 
@@ -262,9 +262,9 @@ IdentifyController (
 
   Status = ExecuteNvmePassThru (&Packet);
   if (!EFI_ERROR (Status)) {
-    IdCtrl                = (UINT8 *)Packet.TransferBuffer;
-    *GranularityPageCount = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_FWUG];
-    *LpedsSupported       = (IdCtrl[SRE_NVME_ID_CTRL_OFFSET_LPA] & SRE_NVME_LPA_LPEDS) != 0;
+    IdCtrl                     = (UINT8 *)Packet.TransferBuffer;
+    *FirmwareUpdateGranularity = IdCtrl[SRE_NVME_ID_CTRL_OFFSET_FWUG];
+    *LpedsSupported            = (IdCtrl[SRE_NVME_ID_CTRL_OFFSET_LPA] & SRE_NVME_LPA_LPEDS) != 0;
   }
 
   FreeAlignedPages (Packet.TransferBuffer, EFI_SIZE_TO_PAGES (SRE_NVME_IDENTIFY_BUFFER_SIZE));
@@ -284,7 +284,7 @@ SreStorageLibConstructor (
   EFI_STATUS Status;
   EFI_HANDLE Handle;
   NVME_CAP Cap;
-  UINT32 Bpinfo;
+  UINT32 BpInfo;
   UINT8 GranularityPageCount;
   BOOLEAN LpedsSupported;
   UINTN BpSize;
@@ -322,7 +322,7 @@ SreStorageLibConstructor (
   }
 
   // Set global block size
-  Status = IdentifyController (&GranularityPageCount, &LpedsSupported);
+  Status = IdentifyController (&FirmwareUpdateGranularity, &LpedsSupported);
   if (EFI_ERROR (Status)) {
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Failed to identify controller (%r), SRE not supported\n", Status));
     return EFI_SUCCESS;
@@ -331,9 +331,9 @@ SreStorageLibConstructor (
     DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Log Page Extended Data Support (LPA.LPEDS); boot-partition read unsupported\n"));
     return EFI_SUCCESS;
   }
-  mBlockSize = ((GranularityPageCount == SRE_NVME_FWUG_NO_INFO) || (GranularityPageCount == SRE_NVME_FWUG_NO_RESTRICTION))
-    ? EFI_PAGE_SIZE * SRE_NVME_DEFAULT_GRANULARITY
-    : EFI_PAGE_SIZE * GranularityPageCount;
+  mBlockSize = ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) || (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
+    ? SRE_NVME_FWUG_RESOLUTION * SRE_NVME_DEFAULT_GRANULARITY
+    : SRE_NVME_FWUG_RESOLUTION * FirmwareUpdateGranularity;
 
   // Set global block count
   Status = mPciIo->Mem.Read (mPciIo, EfiPciIoWidthUint32, SRE_NVME_BAR0_INDEX, NVME_BPINFO_OFFSET, 1, &BpInfo);
