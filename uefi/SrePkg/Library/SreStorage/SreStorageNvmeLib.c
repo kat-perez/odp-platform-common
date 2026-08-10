@@ -57,7 +57,7 @@
 //
 // Default used when granularity reported by FWUG is 0 (no info) or 0xFF (no restriction)
 //
-#define SRE_NVME_DEFAULT_GRANULARITY          1
+#define SRE_NVME_FWUG_DEFAULT_GRANULARITY     1
 #define SRE_NVME_FWUG_NO_INFO                 0x00
 #define SRE_NVME_FWUG_NO_RESTRICTION          0xFF
 #define SRE_NVME_FWUG_RESOLUTION              SIZE_4KB
@@ -66,38 +66,26 @@
 // Boot Partition geometry via the controller's PCI BAR0 MMIO registers
 // (NVMe Base Spec §3.1, BPINFO). Readable whenever the controller is powered.
 //
-#define SRE_NVME_BAR0_INDEX            0
-#define SRE_NVME_BPINFO_BPSZ_MASK      0x7FFF       // bits 14:0, BP size in 128 KiB units
+#define SRE_NVME_BAR0_INDEX                   0
+#define SRE_NVME_BPINFO_BPSZ_MASK             0x7FFF // bits 14:0, BP size in 128 KiB units
 
 //
 // Boot Partition read via Get Log Page LID 0x15 field encodings (NVMe Base
 // Spec 2.1 §8.1.3 / §5.1.12). Used by SreStorageRead.
 //
-#define SRE_NVME_BP_LOG_HEADER_SIZE    16    // 16-byte header prepended to the LID 0x15 stream
-#define SRE_NVME_LSP_BPID_MASK         0x7F  // Get Log Page CDW10 LSP field carries the BPID
+#define SRE_NVME_BP_LOG_HEADER_SIZE           16    // 16-byte header prepended to the LID 0x15 stream
+#define SRE_NVME_LSP_BPID_MASK                0x7F  // Get Log Page CDW10 LSP field carries the BPID
 
 //
 // Boot Partition Write Protection State (BPxWPS): the 3-bit NVMe field values
 // (NVMe Base Spec 2.1 §5.1.25.1.32, Boot Partition Write Protection Config):
-//   000b  Change in state not requested
-//   001b  Write Unlocked
-//   010b  Write Locked
-//   011b  Write Locked Until Power Cycle
-//   100b  Write Protection controlled by RPMB
-//
-#define SRE_BPWPS_WRITE_UNLOCKED                  0x1  // 001b Write Unlocked
-#define SRE_BPWPS_WRITE_LOCKED                    0x2  // 010b Write Locked
-#define SRE_BPWPS_WRITE_LOCKED_UNTIL_POWER_CYCLE  0x3  // 011b Write Locked Until Power Cycle
-
-//
-// Logical write-protection state of a Boot Partition, used by NvmeSetLockState.
-// Values are the NVMe BPxWPS field encodings (SRE_BPWPS_*), named with the
-// spec's Boot Partition Write Protection State terminology.
 //
 typedef enum NVME_LOCK_STATE {
-  WriteUnlocked              = SRE_BPWPS_WRITE_UNLOCKED,
-  WriteLocked                = SRE_BPWPS_WRITE_LOCKED,
-  WriteLockedUntilPowerCycle = SRE_BPWPS_WRITE_LOCKED_UNTIL_POWER_CYCLE
+  NoChangeRequested          = 0,
+  WriteUnlocked              = 0x1, // 001b
+  WriteLocked                = 0x2, // 010b Write Locked
+  WriteLockedUntilPowerCycle = 0x3, // 011b Write Locked Until Power Cycle
+  WriteProtectionByRpmb      = 0x4  // 100b Write Protection controlled by RPMB
 } NVME_LOCK_STATE;
 
 
@@ -332,7 +320,7 @@ SreStorageLibConstructor (
     return EFI_SUCCESS;
   }
   mBlockSize = ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) || (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
-    ? SRE_NVME_FWUG_RESOLUTION * SRE_NVME_DEFAULT_GRANULARITY
+    ? SRE_NVME_FWUG_RESOLUTION * SRE_NVME_FWUG_DEFAULT_GRANULARITY
     : SRE_NVME_FWUG_RESOLUTION * FirmwareUpdateGranularity;
 
   // Set global block count
