@@ -81,11 +81,26 @@
 //
 // Boot Partition Write Protection State (BPxWPS): the 3-bit NVMe field values
 // (NVMe Base Spec 2.1 §5.1.25.1.32, Boot Partition Write Protection Config):
+//   000b  Change in state not requested
+//   001b  Write Unlocked
+//   010b  Write Locked
+//   011b  Write Locked Until Power Cycle
+//   100b  Write Protection controlled by RPMB
+//
+#define SRE_BPWPS_CHANGE_NOT_REQUESTED            0x0  // 000b Change in state not requested
+#define SRE_BPWPS_WRITE_UNLOCKED                  0x1  // 001b Write Unlocked
+#define SRE_BPWPS_WRITE_LOCKED                    0x2  // 010b Write Locked
+#define SRE_BPWPS_WRITE_LOCKED_UNTIL_POWER_CYCLE  0x3  // 011b Write Locked Until Power Cycle
+#define SRE_BPWPS_CONTROLLED_BY_RPMB              0x4  // 100b Write Protection controlled by RPMB
+
+//
+// This enum is for updates to the BPWPS register.  RPMB is a read only bit, so not part of the enum
+// and change not requested is zero, so also not part of the enum.
 //
 typedef enum NVME_LOCK_STATE {
-  WriteUnlocked              = 0x1, // 001b
-  WriteLocked                = 0x2, // 010b Write Locked
-  WriteLockedUntilPowerCycle = 0x3  // 011b Write Locked Until Power Cycle
+  WriteUnlocked              = SRE_BPWPS_WRITE_UNLOCKED,
+  WriteLocked                = SRE_BPWPS_WRITE_LOCKED,
+  WriteLockedUntilPowerCycle = SRE_BPWPS_WRITE_LOCKED_UNTIL_POWER_CYCLE
 } NVME_LOCK_STATE;
 
 
@@ -437,14 +452,11 @@ SreStorageRead (
   UINT64        LogOffset;
   UINT32        NumD;
 
-  if (PartitionIndex > SrePartition_B || BlockBuffer == NULL) {
+  if (PartitionIndex > SrePartition_B || BlockIndex >= mBlockCount || BlockBuffer == NULL) {
     return EFI_INVALID_PARAMETER;
   }
   if (!mIsSupported) {
     return EFI_UNSUPPORTED;
-  }
-  if (BlockIndex >= mBlockCount) {
-    return EFI_INVALID_PARAMETER;
   }
   if (mIsWriteOpen) {
     return EFI_ABORTED;
