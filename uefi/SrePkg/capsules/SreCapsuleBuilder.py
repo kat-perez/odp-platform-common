@@ -2,6 +2,16 @@
 #
 # Build + sign the single-payload SRE recovery capsule
 #
+# Capsule construction:
+#   FAT32 partition image
+#     -> FMP payload header and monotonic count
+#     -> OEM payload signature
+#     -> FMP authentication header
+#     -> FMP image header
+#     -> FMP capsule header
+#     -> UEFI capsule header
+#     -> Windows INF and signed catalog
+#
 import argparse
 import datetime
 import os
@@ -30,76 +40,103 @@ def pack_image_header_v3(type_guid, image_index, payload_len, capsule_support):
     )
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--wim-path")                                   # input WIM path
-    p.add_argument("--capsule-version", type=lambda v: int(v, 0))  # FMP / ESRT / capsule version
-    p.add_argument("--lsv", type=lambda v: int(v, 0))              # lowest supported version
-    p.add_argument("--monotonic-count", type=int)                  # anti-rollback counter
-    p.add_argument("--esrt-guid", type=uuid.UUID)                  # FMP payload type (ESRT)
-    return p.parse_args()
+    parser = argparse.ArgumentParser(description="Build the SRE recovery capsule and Windows Update package.")
+    parser.add_argument(
+        "--partition-image-path",
+        required=True,
+        help="Path to the raw FAT32 boot-partition image",
+    )
+    parser.add_argument(
+        "--capsule-version",
+        required=True,
+        type=lambda value: int(value, 0),
+        help="FMP, ESRT, and capsule version as a decimal or 0x-prefixed value",
+    )
+    parser.add_argument(
+        "--lsv",
+        required=True,
+        type=lambda value: int(value, 0),
+        help="Lowest supported version as a decimal or 0x-prefixed value",
+    )
+    parser.add_argument(
+        "--monotonic-count",
+        required=True,
+        type=int,
+        help="Monotonic count used by FMP authentication",
+    )
+    parser.add_argument(
+        "--esrt-guid",
+        required=True,
+        type=uuid.UUID,
+        help="ESRT GUID identifying the SRE firmware resource",
+    )
+    return parser.parse_args()
 
-def create_payload(args, build_artifacts_dir):
+def create_unsigned_fmp_payload(args, build_artifacts_dir):
 
-    # Wrap the raw WIM in an FMP payload header
-    with open(args.wim_path, "rb") as f:
-        wim_data = f.read()
+    # Wrap the raw FAT32 partition image in an FMP payload header. The monotonic
+    # count is appended because it is included in the bytes the OEM must sign.
+    with open(args.partition_image_path, "rb") as partition_image_file:
+        partition_image_data = partition_image_file.read()
 
     fmp_payload = FmpPayloadHeaderClass()
     fmp_payload.FwVersion = args.capsule_version
     fmp_payload.LowestSupportedVersion = args.lsv
-    fmp_payload.Payload = wim_data
+    fmp_payload.Payload = partition_image_data
     payload_data = fmp_payload.Encode() + struct.pack("<Q", args.monotonic_count)
 
     # Drop the unsigned payload to disk and return its path
-    payload_path = os.path.join(build_artifacts_dir, "payload.bin")
-    with open(payload_path, "wb") as f:
-        f.write(payload_data)
-    return payload_path
+    unsigned_fmp_payload_path = os.path.join(build_artifacts_dir, "unsigned_fmp_payload.bin")
+    with open(unsigned_fmp_payload_path, "wb") as unsigned_fmp_payload_file:
+        unsigned_fmp_payload_file.write(payload_data)
+    return unsigned_fmp_payload_path
 
-def sign_payload(args, payload_path):
+def sign_payload(args, unsigned_fmp_payload_path):
 
-    # TODO: The OEM must implement its process for signing the binary data at
-    # payload_path with a private key. The implementation may use args for OEM-
-    # specific configuration and must return the path to the resulting signature
-    # or certificate data accepted by FmpAuthHeaderClass.AuthInfo.cert_data.
+    # TODO: The OEM must sign all bytes at unsigned_fmp_payload_path with its
+    # private key. Those bytes contain the FMP payload header, the raw FAT32
+    # partition image, and the monotonic count. The implementation may use args
+    # for OEM-specific configuration and must return the path to the resulting
+    # signature or certificate data accepted by FmpAuthHeaderClass.AuthInfo.cert_data.
 
     raise NotImplementedError("OEM payload signing is not implemented")
 
-def create_signed_payload(args, signed_path):
-    build_artifacts_dir = os.path.dirname(signed_path)
+def create_authenticated_fmp_payload(args, unsigned_fmp_payload_path, signature_path):
+    build_artifacts_dir = os.path.dirname(unsigned_fmp_payload_path)
 
-    with open(os.path.join(build_artifacts_dir, "payload.bin"), "rb") as f:
-        payload_data = f.read()
-    with open(signed_path, "rb") as f:
-        signed_payload_data = f.read()
+    with open(unsigned_fmp_payload_path, "rb") as unsigned_fmp_payload_file:
+        unsigned_fmp_payload_data = unsigned_fmp_payload_file.read()
+    with open(signature_path, "rb") as signature_file:
+        signature_data = signature_file.read()
 
-    # Rebuild the payload header (needed by the auth wrapper) from the signed data
+    # The final eight bytes are the monotonic count, not part of the encoded FMP
+    # payload header reconstructed for the authentication wrapper.
     fmp_payload = FmpPayloadHeaderClass()
-    fmp_payload.Decode(payload_data[:-8])
+    fmp_payload.Decode(unsigned_fmp_payload_data[:-8])
 
     fmp_auth = FmpAuthHeaderClass()
     fmp_auth.MonotonicCount = args.monotonic_count
     fmp_auth.FmpPayloadHeader = fmp_payload
-    fmp_auth.AuthInfo.cert_data = signed_payload_data
+    fmp_auth.AuthInfo.cert_data = signature_data
 
-    # Drop the signed FMP payload to disk and return its path
-    payload_path = os.path.join(build_artifacts_dir, "payload.payload.bin")
-    with open(payload_path, "wb") as f:
-        f.write(fmp_auth.Encode())
-    return payload_path
+    authenticated_fmp_payload_path = os.path.join(build_artifacts_dir, "authenticated_fmp_payload.bin")
+    with open(authenticated_fmp_payload_path, "wb") as authenticated_fmp_payload_file:
+        authenticated_fmp_payload_file.write(fmp_auth.Encode())
+    return authenticated_fmp_payload_path
 
-def create_image(args, payload_path):
-    build_artifacts_dir = os.path.dirname(payload_path)
-    image_path = os.path.join(build_artifacts_dir, "image_0.bin")
-    payload_size = os.path.getsize(payload_path)
+def create_fmp_capsule_image(args, authenticated_fmp_payload_path):
+    build_artifacts_dir = os.path.dirname(authenticated_fmp_payload_path)
+    fmp_capsule_image_path = os.path.join(build_artifacts_dir, "fmp_capsule_image.bin")
+    payload_size = os.path.getsize(authenticated_fmp_payload_path)
 
-    image0_header = pack_image_header_v3(args.esrt_guid, 1, payload_size, CAPSULE_SUPPORT_AUTHENTICATION)
-    with open(image_path, "wb") as out, open(payload_path, "rb") as f:
-        out.write(image0_header)
-        for chunk in iter(lambda: f.read(4096), b""):
-            out.write(chunk)
+    fmp_image_header = pack_image_header_v3(args.esrt_guid, 1, payload_size, CAPSULE_SUPPORT_AUTHENTICATION)
+    with open(fmp_capsule_image_path, "wb") as fmp_capsule_image_file, \
+         open(authenticated_fmp_payload_path, "rb") as authenticated_fmp_payload_file:
+        fmp_capsule_image_file.write(fmp_image_header)
+        for chunk in iter(lambda: authenticated_fmp_payload_file.read(4096), b""):
+            fmp_capsule_image_file.write(chunk)
 
-    return image_path
+    return fmp_capsule_image_path
 
 def create_inf(args, build_dir):
     version = args.capsule_version
@@ -144,55 +181,65 @@ def create_cat(args, build_dir):
 
 def main():
     args = parse_args()
-    repo_root = os.path.dirname(os.path.abspath(__file__))
-    build_dir = os.path.join(repo_root, "Build", "SreCapsule")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    build_dir = os.path.join(script_dir, "Build", "SreCapsule")
     build_artifacts_dir = os.path.join(build_dir, "Artifacts")
     os.makedirs(build_artifacts_dir, exist_ok=True)
 
-    # Image[0], signed WIM payload
-    payload_path = create_payload(args, build_artifacts_dir)
-    signed_payload_path = sign_payload(args, payload_path)
-    signed_image_payload_path = create_signed_payload(args, signed_payload_path)
-    image_path = create_image(args, signed_image_payload_path)
-    image_size = os.path.getsize(image_path)
+    # Step 1: Add an FMP payload header and monotonic count to the partition image.
+    unsigned_fmp_payload_path = create_unsigned_fmp_payload(args, build_artifacts_dir)
 
-    # EFI_FIRMWARE_MANAGEMENT_CAPSULE_HEADER - Wraps images indicating they are for FW Management drivers
-    fmt_fwmgmt_capsule_header = "<IHHQ"                             # Format of the structure (U32, U16, U16, U64)
-    fwmgmt_header_size = struct.calcsize(fmt_fwmgmt_capsule_header) # Size of the structure
-    efi_fwm_capsule_header = struct.pack(fmt_fwmgmt_capsule_header,
+    # Step 2: Sign the complete unsigned FMP payload using the OEM implementation.
+    signature_path = sign_payload(args, unsigned_fmp_payload_path)
+
+    # Step 3: Add the FMP authentication header containing the OEM signature.
+    authenticated_fmp_payload_path = create_authenticated_fmp_payload(
+        args,
+        unsigned_fmp_payload_path,
+        signature_path,
+    )
+
+    # Step 4: Add the FMP image header used to identify this payload to the FMP driver.
+    fmp_capsule_image_path = create_fmp_capsule_image(args, authenticated_fmp_payload_path)
+    fmp_capsule_image_size = os.path.getsize(fmp_capsule_image_path)
+
+    # Step 5: Add the FMP capsule header around the image.
+    fmp_capsule_header_format = "<IHHQ"                                  # Format: U32, U16, U16, U64
+    fmp_capsule_header_size = struct.calcsize(fmp_capsule_header_format)
+    fmp_capsule_header = struct.pack(fmp_capsule_header_format,
         1,                                         # (UINT32) Version
         0,                                         # (UINT16) Embedded Driver Count
         1,                                         # (UINT16) Payload Count
-        fwmgmt_header_size,                        # (UINT64) Offset to payload[0]
+        fmp_capsule_header_size,                   # (UINT64) Offset to payload[0]
     )
-    efi_fwm_capsule_size = len(efi_fwm_capsule_header) + image_size
+    fmp_capsule_size = len(fmp_capsule_header) + fmp_capsule_image_size
 
-    # EFI_CAPSULE_HEADER - Overall header for entire capsule
-    fmt_capsule_header = "<16sIII4B"                          # Format of the structure (GUID, U32, U32, U32, 4 bytes padding)
-    capsule_header_size = struct.calcsize(fmt_capsule_header) # Size of the structure
-    efi_header = struct.pack(fmt_capsule_header,
+    # Step 6: Add the outer UEFI capsule header.
+    uefi_capsule_header_format = "<16sIII4B"                       # Format: GUID, U32, U32, U32, 4 padding bytes
+    uefi_capsule_header_size = struct.calcsize(uefi_capsule_header_format)
+    uefi_capsule_header = struct.pack(uefi_capsule_header_format,
         uuid.UUID("6dcbd5ed-e82d-4c44-bda1-7194199ad92a").bytes_le,  # (EFI_GUID) CapsuleGuid = EFI_FMP_CAPSULE_ID_GUID
-        capsule_header_size,                            # (UINT32) HeaderSize = 32
+        uefi_capsule_header_size,                       # (UINT32) HeaderSize = 32
         0x00010000 | 0x00040000,                        # (UINT32) Flags = PERSIST_ACROSS_RESET | INITIATE_RESET
-        capsule_header_size + efi_fwm_capsule_size,     # (UINT32) CapsuleImageSize = size of entire capsule
+        uefi_capsule_header_size + fmp_capsule_size,    # (UINT32) CapsuleImageSize = size of entire capsule
         0, 0, 0, 0)                                     # 4B -> pad to 32-byte HeaderSize
 
-    # Create the new capsule
+    # Write the complete capsule in outermost-to-innermost header order.
     with open(os.path.join(build_dir, "SreRecovery.cap"), "wb") as out:
-        out.write(efi_header)                           # Capsule header
-        out.write(efi_fwm_capsule_header)               # FMP capsule header
-        with open(image_path, "rb") as f:               # Image[0] - signed WIM payload
+        out.write(uefi_capsule_header)                  # UEFI capsule header
+        out.write(fmp_capsule_header)                   # FMP capsule header
+        with open(fmp_capsule_image_path, "rb") as f:   # FMP image containing the authenticated partition image
             for chunk in iter(lambda: f.read(4096), b""):
                 out.write(chunk)
-    print(f"Capsule created")
+    print("Capsule created")
 
-    # Windows Update .inf that references the capsule by its ESRT GUID
+    # Step 7: Create the Windows Update INF and signed catalog.
     create_inf(args, build_dir)
-    print(f"INF created")
+    print("INF created")
 
     # Signed .cat catalog so Windows accepts the driver package
     create_cat(args, build_dir)
-    print(f"CAT created")
+    print("CAT created")
 
 if __name__ == "__main__":
     main()

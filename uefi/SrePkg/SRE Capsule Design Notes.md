@@ -17,8 +17,8 @@ a RAM drive, then mounted from the BDS to launch the SRE image.  This payload bi
 Before using the capsule builder, the OEM must implement the two signing TODOs in
 `capsules\SreCapsuleBuilder.py`:
 
-- `sign_payload()` must sign the binary data at `payload_path` with the OEM's private key and return the path to the
-  signature or certificate data consumed by the FMP authentication header.
+- `sign_payload()` must sign the binary data at `unsigned_fmp_payload_path` with the OEM's private key and return the
+  path to the signature or certificate data consumed by the FMP authentication header.
 - `sign_catalog()` must apply the OEM's Windows catalog-signing process to `catalog_path` and return the path to the
   signed catalog.
 
@@ -26,7 +26,7 @@ The capsule can then be created by invoking the Python builder directly and supp
 
   ```terminal
   py .\capsules\SreCapsuleBuilder.py `
-    --wim-path .\ValidationFat32Partition.img `
+    --partition-image-path .\ValidationFat32Partition.img `
     --capsule-version <version> `
     --lsv <lowest-supported-version> `
     --monotonic-count <count> `
