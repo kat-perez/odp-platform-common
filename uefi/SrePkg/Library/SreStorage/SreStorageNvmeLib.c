@@ -273,7 +273,7 @@ SreStorageLibConstructor (
   EFI_HANDLE Handle;
   NVME_CAP Cap;
   UINT32 BpInfo;
-  UINT8 GranularityPageCount;
+  UINT8 FirmwareUpdateGranularity;
   BOOLEAN LpedsSupported;
   UINTN BpSize;
 

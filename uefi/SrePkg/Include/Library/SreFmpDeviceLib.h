@@ -63,9 +63,7 @@ typedef struct {
 //
 // This structure is stored at a fixed byte offset (SRE_IMAGE_INFO_OFFSET) from
 // the start of the SRE image partition to record the version of the image
-// currently installed to the partition. Packed size is exactly 32 bytes
-// (4 + 4 + 4 + 5*4); the layout is an on-flash format, fixed for
-// SRE_IMAGE_INFO_STRUCT_VER 1.
+// currently installed to the partition.
 //
 #pragma pack (1)
 typedef struct {
