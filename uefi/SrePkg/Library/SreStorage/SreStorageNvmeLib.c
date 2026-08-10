@@ -94,8 +94,8 @@
 #define SRE_BPWPS_CONTROLLED_BY_RPMB              0x4  // 100b Write Protection controlled by RPMB
 
 //
-// This enum is for updates to the BPWPS register.  RPMB is a read only bit, so not part of the enum
-// and change not requested is zero, so also not part of the enum.
+// This enum is for writes to the BPWPS register.  RPMB is a read only bit and change not requested is a lack of any
+// bit, so neither are part of the enum.
 //
 typedef enum NVME_LOCK_STATE {
   WriteUnlocked              = SRE_BPWPS_WRITE_UNLOCKED,
@@ -228,7 +228,7 @@ ExecuteNvmePassThru (
 // Read the fields the library needs from Identify Controller (CNS=01h) in a single command
 //
 // [out] FirmwareUpdateGranularity - Write granularity as reported by the identify command
-// [out] SetLockStateSupported      - TRUE if Set Features may configure Boot Partition write protection
+// [out] SetLockStateSupported     - TRUE if Set Features may configure Boot Partition write protection
 // [out] LpedsSupported            - TRUE if the controller supports the Get Log Page extended Log Page Offset
 //                                   (CDW12/CDW13) and 16-bit number of Dwords fields (LPA bit 2, LPEDS). The boot-
 //                                   partition read path depends on these fields.
@@ -335,11 +335,11 @@ SreStorageLibConstructor (
     return EFI_SUCCESS;
   }
   if (!LpedsSupported) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Log Page Extended Data Support (LPA.LPEDS); boot-partition read unsupported\n"));
+    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller does not support Log Page Extended Data (LPA.LPEDS) to allow boot partition reads\n"));
     return EFI_SUCCESS;
   }
   if (!SetLockStateSupported) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller lacks Set Features Boot Partition Write Protection Support (BPCAP.SFBPWPS)\n"));
+    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller does not support Boot Partition Write Protection Support (BPCAP.SFBPWPS)\n"));
     return EFI_SUCCESS;
   }
   mBlockSize = ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) || (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
@@ -386,7 +386,7 @@ NvmeSetLockState (
   UINT32  Shift;
   UINT32  Config;
 
-  if (PartitionIndex > SrePartition_B || LockState < WriteUnlocked || LockState > WriteLockedUntilPowerCycle) {
+  if (PartitionIndex > SrePartition_B) {
     return EFI_INVALID_PARAMETER;
   }
 
