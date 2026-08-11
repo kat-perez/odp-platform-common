@@ -26,6 +26,10 @@ from edk2toolext.capsule import capsule_helper
 # EFI_FMP image header v3 ImageCapsuleSupport bit
 CAPSULE_SUPPORT_AUTHENTICATION = 0x0000000000000001
 
+# Must match gSreEsrtGuid (SrePkg.dec) as injected into the FMP driver's PcdFmpDeviceImageTypeIdGuid and the
+# ESRT/Windows update uses it to identify this capsule.
+SRE_ESRT_GUID = uuid.UUID("9777ff5d-3c53-4316-9af3-b99fb9c60fb5")
+
 # Image header packing for Version-3 EFI_FIRMWARE_MANAGEMENT_CAPSULE_IMAGE_HEADER is not yet supported by edk2toollib
 def pack_image_header_v3(type_guid, image_index, payload_len, capsule_support):
     return struct.pack(
@@ -64,12 +68,6 @@ def parse_args():
         type=int,
         help="Monotonic count used by FMP authentication",
     )
-    parser.add_argument(
-        "--esrt-guid",
-        required=True,
-        type=uuid.UUID,
-        help="ESRT GUID identifying the SRE firmware resource",
-    )
     return parser.parse_args()
 
 def create_unsigned_fmp_payload(args, build_artifacts_dir):
@@ -96,8 +94,10 @@ def sign_payload(args, unsigned_fmp_payload_path):
     # TODO: The OEM must sign all bytes at unsigned_fmp_payload_path with its
     # private key. Those bytes contain the FMP payload header, the raw FAT32
     # partition image, and the monotonic count. The implementation may use args
-    # for OEM-specific configuration and must return the path to the resulting
-    # signature or certificate data accepted by FmpAuthHeaderClass.AuthInfo.cert_data.
+    # for OEM-specific configuration and must return the path to a raw PKCS#7
+    # detached signature (the WIN_CERTIFICATE body) over those bytes, matching
+    # what FmpAuthHeaderClass.AuthInfo.cert_data expects and what the FMP driver
+    # verifies against its trust anchor.
 
     raise NotImplementedError("OEM payload signing is not implemented")
 
@@ -129,7 +129,7 @@ def create_fmp_capsule_image(args, authenticated_fmp_payload_path):
     fmp_capsule_image_path = os.path.join(build_artifacts_dir, "fmp_capsule_image.bin")
     payload_size = os.path.getsize(authenticated_fmp_payload_path)
 
-    fmp_image_header = pack_image_header_v3(args.esrt_guid, 1, payload_size, CAPSULE_SUPPORT_AUTHENTICATION)
+    fmp_image_header = pack_image_header_v3(SRE_ESRT_GUID, 1, payload_size, CAPSULE_SUPPORT_AUTHENTICATION)
     with open(fmp_capsule_image_path, "wb") as fmp_capsule_image_file, \
          open(authenticated_fmp_payload_path, "rb") as authenticated_fmp_payload_file:
         fmp_capsule_image_file.write(fmp_image_header)
@@ -154,7 +154,7 @@ def create_inf(args, build_dir):
     inf_file.AddFirmware(
         "Firmware",                     # Tag
         "Secure Recovery Environment",  # Description
-        str(args.esrt_guid),            # EsrtGuid
+        str(SRE_ESRT_GUID),             # EsrtGuid
         str(version),                   # VersionInt
         "SreRecovery.cap",              # FirmwareFile
     )
@@ -167,7 +167,8 @@ def sign_catalog(args, catalog_path):
 
     # TODO: The OEM must implement its Windows catalog-signing process. The
     # implementation may use args for OEM-specific configuration and must return
-    # the path to the signed catalog.
+    # the path to an Authenticode-signed .cat (same path in place, or a new path;
+    # create_cat() replaces catalog_path with whichever path is returned).
 
     raise NotImplementedError("OEM catalog signing is not implemented")
 

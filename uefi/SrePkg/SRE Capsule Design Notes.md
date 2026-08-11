@@ -29,12 +29,13 @@ The capsule can then be created by invoking the Python builder directly and supp
     --partition-image-path .\ValidationFat32Partition.img `
     --capsule-version <version> `
     --lsv <lowest-supported-version> `
-    --monotonic-count <count> `
-    --esrt-guid <guid>
+    --monotonic-count <count>
   ```
 
-The capsule version, lowest supported version, monotonic count, ESRT GUID, signing credentials, and signing service
-configuration are OEM-specific and are intentionally not stored in this repository.
+The capsule version, lowest supported version, monotonic count, signing credentials, and signing service
+configuration are OEM-specific and are intentionally not stored in this repository. The ESRT GUID is fixed as
+`SRE_ESRT_GUID` in `SreCapsuleBuilder.py`, matching `gSreEsrtGuid` (SrePkg.dec) as injected into the FMP driver's
+`PcdFmpDeviceImageTypeIdGuid` by the platform FDF.
 
 ## ESRT Versioning
 
