@@ -1,24 +1,27 @@
 # SRE Recovery Capsule — Design Notes
 
 The Secure Recovery Environment (SRE) ships as a **standard single-payload FMP capsule** which is installed by a
-standard single instance FmpDeviceLib.  This note only describes what is novel about this implementation.
+standard, single-instance FmpDeviceLib. This note only describes what is novel about this implementation.
 
 ## SRE Capsule Payload
 
 The capsule payload is the physical **~1 GiB raw FAT32 boot-partition image** that is placed in memory, converted to
-a RAM drive, then mounted from the BDS to launch the SRE image.  This payload binary image is built using the
-`Application\BpRecoveryLoader\BuildBpFatImage.ps1` tool located in this directory.  Run everything below from the
+a RAM drive, then mounted from the BDS to launch the SRE image. This payload binary image is built using the
+`Application\BpRecoveryLoader\BuildBpFatImage.ps1` tool under this package. Run everything below from the
 `SrePkg` directory; the FAT image build needs an elevated shell with the Hyper-V Management Tools feature enabled:
 
   ```terminal
-  .\Application\BpRecoveryLoader\BuildBpFatImage.ps1 -WimFile .\ValidationOS.wim -OutImage .\ValidationFat32Partition.img -SizeBytes 1GB
+  .\Application\BpRecoveryLoader\BuildBpFatImage.ps1 `
+    -WimFile .\ValidationOS.wim `
+    -OutImage .\ValidationFat32Partition.img `
+    -SizeBytes 1GB
   ```
 
 Before using the capsule builder, the OEM must implement the two signing TODOs in
 `capsules\SreCapsuleBuilder.py`:
 
 - `sign_payload()` must sign the binary data at `unsigned_fmp_payload_path` with the OEM's private key and return the
-  path to the signature or certificate data consumed by the FMP authentication header.
+  path to the raw PKCS#7 detached signature consumed by the FMP authentication header.
 - `sign_catalog()` must apply the OEM's Windows catalog-signing process to `catalog_path` and return the path to the
   signed catalog.
 
@@ -40,9 +43,9 @@ configuration are OEM-specific and are intentionally not stored in this reposito
 ## ESRT Versioning
 
 When the capsule is applied, the FMP driver reads the version from the capsule header and creates an SRE_IMAGE_INFO
-structure that is used to overwrite unused GPT LBA 34 in the partition image before it is written to the NVME SRE storage
-area.  This structure is then used on the next boot to populte the ESRT table with the currently running version
-of the image.
+structure that is used to overwrite unused GPT LBA 34 in the partition image before it is written to the NVMe SRE
+storage area. This structure is then used on the next boot to populate the ESRT table with the currently running
+version of the image.
 
 ```c
 typedef struct {
@@ -63,7 +66,3 @@ Implications of this solution are:
   `SRE_IMAGE_INFO_OFFSET % BlockSize`.
 - `Signature` and `StructVersion` are stable across future revisions to allow field changes going forward.
 - `FmpDeviceGetVersion` reads the descriptor from Partition A and returns `0x00000000` if it is not present/valid.
-
-Next iteration idea is to directly write the .wim into the capsule and NVME partition along with a small Win loader
-that can directly launch a WIM.  This would compress the capsule dramatically since WIMs are compressed, and allow
-the IMAGE_INFO structure to be a trailer at the end of the partition and not rely on a repurposed region of a partition.

@@ -335,16 +335,26 @@ SreStorageLibConstructor (
     return EFI_SUCCESS;
   }
   if (!LpedsSupported) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller does not support Log Page Extended Data (LPA.LPEDS) to allow boot partition reads\n"));
+    DEBUG ((
+      DEBUG_ERROR,
+      "[SreStorageNvmeLib] Controller does not support Log Page Extended Data "
+      "(LPA.LPEDS) to allow boot partition reads\n"
+      ));
     return EFI_SUCCESS;
   }
   if (!SetLockStateSupported) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Controller does not support Boot Partition Write Protection Support (BPCAP.SFBPWPS)\n"));
+    DEBUG ((
+      DEBUG_ERROR,
+      "[SreStorageNvmeLib] Controller does not support Boot Partition Write "
+      "Protection Support (BPCAP.SFBPWPS)\n"
+      ));
     return EFI_SUCCESS;
   }
-  mBlockSize = ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) || (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
-    ? SRE_NVME_FWUG_RESOLUTION * SRE_NVME_FWUG_DEFAULT_GRANULARITY
-    : SRE_NVME_FWUG_RESOLUTION * FirmwareUpdateGranularity;
+  mBlockSize =
+    ((FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_INFO) ||
+     (FirmwareUpdateGranularity == SRE_NVME_FWUG_NO_RESTRICTION))
+      ? SRE_NVME_FWUG_RESOLUTION * SRE_NVME_FWUG_DEFAULT_GRANULARITY
+      : SRE_NVME_FWUG_RESOLUTION * FirmwareUpdateGranularity;
 
   // Set global block count
   Status = mPciIo->Mem.Read (mPciIo, EfiPciIoWidthUint32, SRE_NVME_BAR0_INDEX, NVME_BPINFO_OFFSET, 1, &BpInfo);
@@ -359,7 +369,11 @@ SreStorageLibConstructor (
   }
   BpSize = (UINTN)BpInfo * SIZE_128KB;
   if (BpSize < mBlockSize) {
-    DEBUG ((DEBUG_ERROR, "[SreStorageNvmeLib] Block size reported by NVME exceeds boot partition size, SRE not supported\n"));
+    DEBUG ((
+      DEBUG_ERROR,
+      "[SreStorageNvmeLib] Block size reported by NVMe exceeds boot partition "
+      "size, SRE not supported\n"
+      ));
     return EFI_SUCCESS;
   }
   mBlockCount = BpSize / mBlockSize;
@@ -452,11 +466,14 @@ SreStorageRead (
   UINT64        LogOffset;
   UINT32        NumD;
 
-  if (PartitionIndex > SrePartition_B || BlockIndex >= mBlockCount || BlockBuffer == NULL) {
+  if (PartitionIndex > SrePartition_B || BlockBuffer == NULL) {
     return EFI_INVALID_PARAMETER;
   }
   if (!mIsSupported) {
     return EFI_UNSUPPORTED;
+  }
+  if (BlockIndex >= mBlockCount) {
+    return EFI_INVALID_PARAMETER;
   }
   if (mIsWriteOpen) {
     return EFI_ABORTED;
