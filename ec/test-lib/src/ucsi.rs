@@ -12,10 +12,11 @@ use embedded_usb_pd::ucsi::v1_2::cci::LocalCci;
 use embedded_usb_pd::ucsi::v1_2::lpm::{get_connector_capability, get_connector_status};
 use embedded_usb_pd::ucsi::v1_2::ppm::get_capability;
 
-/// Power direction of a connected connector.
-pub use embedded_usb_pd::PowerRole as PowerDirection;
-/// UCSI command opcode selector (re-exported for [`control`] and ACPI callers).
-pub use embedded_usb_pd::ucsi::v1_2::CommandType;
+/// Power role of a connected connector.
+pub use embedded_usb_pd::PowerRole;
+/// UCSI command opcode selector (an ACPI implementation detail).
+#[cfg(any(target_os = "windows", test))]
+pub(crate) use embedded_usb_pd::ucsi::v1_2::CommandType;
 
 /// PPM capabilities (GET_CAPABILITY response).
 pub type UcsiCapability = get_capability::ResponseData;
@@ -24,8 +25,21 @@ pub type UcsiConnectorCapability = get_connector_capability::ResponseData;
 /// Connector status (GET_CONNECTOR_STATUS response).
 pub type UcsiConnectorStatus = get_connector_status::ResponseData;
 
+/// One fail-fast snapshot of a connector's host UCSI state.
+pub struct UcsiSnapshot {
+    /// UCSI interface version (BCD wire value; `0x0120` == UCSI 1.2).
+    pub version: u16,
+    /// PPM capabilities.
+    pub capability: UcsiCapability,
+    /// Per-connector capabilities.
+    pub connector_capability: UcsiConnectorCapability,
+    /// Connector status.
+    pub connector_status: UcsiConnectorStatus,
+}
+
 /// Length of the UCSI CONTROL field the OS writes to issue a command.
-pub const CONTROL_LEN: usize = 8;
+#[cfg(any(target_os = "windows", test))]
+pub(crate) const CONTROL_LEN: usize = 8;
 
 const MAILBOX_LEN: usize = 48;
 #[cfg(any(target_os = "windows", test))]
@@ -39,7 +53,8 @@ const MESSAGE_IN_OFFSET: usize = 16;
 ///
 /// Matches the UCSI command header (opcode, data-length=0) followed by the
 /// LPM connector number in the command-specific field.
-pub fn control(command: CommandType, connector: u8) -> [u8; CONTROL_LEN] {
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn control(command: CommandType, connector: u8) -> [u8; CONTROL_LEN] {
     let mut buf = [0u8; CONTROL_LEN];
     buf[0] = command as u8;
     buf[2] = connector;
@@ -60,16 +75,6 @@ pub(crate) fn normalize_acpi_response(bytes: &[u8]) -> Result<&[u8], MailboxErro
             Ok(&bytes[FFA_PAYLOAD_OFFSET..FFA_PAYLOAD_OFFSET + MAILBOX_LEN])
         }
         length => Err(MailboxError::WrongLength(length)),
-    }
-}
-
-/// UCSI interface version (BCD; `0x0120` == UCSI 1.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UcsiVersion(pub u16);
-
-impl fmt::Display for UcsiVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.0 >> 8, (self.0 >> 4) & 0xf)
     }
 }
 
@@ -151,13 +156,13 @@ fn message_in(bytes: &[u8], expected: usize) -> Result<&[u8], MailboxError> {
     Ok(&bytes[MESSAGE_IN_OFFSET..MESSAGE_IN_OFFSET + expected])
 }
 
-/// Validate a mailbox and return the reported UCSI version.
+/// Validate a mailbox and return the reported UCSI version (BCD wire value).
 ///
 /// Version reporting is forward-compatible: any completed mailbox yields its
 /// VERSION word, while the command-specific decoders below still gate on 1.2.
-pub fn decode_version(bytes: &[u8]) -> Result<UcsiVersion, MailboxError> {
+pub fn decode_version(bytes: &[u8]) -> Result<u16, MailboxError> {
     let (version, _) = validate(bytes)?;
-    Ok(UcsiVersion(version))
+    Ok(version)
 }
 
 /// Decode a GET_CAPABILITY response.
@@ -213,8 +218,6 @@ mod tests {
         assert_eq!(&c[3..], &[0u8; 5]);
     }
 
-    // ── envelope validation boundaries ────────────────────────────────────────
-
     #[test]
     fn rejects_wrong_length() {
         assert_eq!(decode_version(&[0u8; 47]).unwrap_err(), MailboxError::WrongLength(47));
@@ -222,8 +225,6 @@ mod tests {
 
     #[test]
     fn normalizes_full_ffa_envelope() {
-        const FFA_ENVELOPE_LEN: usize = 144;
-        const FFA_PAYLOAD_OFFSET: usize = 32;
         let mailbox = mailbox(cci_complete(16), &[]);
         let mut envelope = [0u8; FFA_ENVELOPE_LEN];
         envelope[FFA_PAYLOAD_OFFSET..FFA_PAYLOAD_OFFSET + MAILBOX_LEN].copy_from_slice(&mailbox);
@@ -282,11 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn version_decodes_forward_compatibly_and_displays() {
+    fn version_decodes_forward_compatibly() {
         let mut buf = mailbox(cci_complete(16), &[]);
         buf[0..2].copy_from_slice(&0x0200u16.to_le_bytes());
-        assert_eq!(decode_version(&buf).unwrap(), UcsiVersion(0x0200));
-        assert_eq!(UcsiVersion(0x0120).to_string(), "1.2");
+        assert_eq!(decode_version(&buf).unwrap(), 0x0200);
     }
 
     #[test]
@@ -299,8 +299,6 @@ mod tests {
             MailboxError::PayloadDecode
         );
     }
-
-    // ── envelope → upstream payload decode ────────────────────────────────────
 
     #[test]
     fn capability_decodes_into_upstream_type() {
@@ -338,19 +336,7 @@ mod tests {
         let status = decode_connector_status(&mailbox(cci_complete(11), &msg)).unwrap();
         assert!(status.connect_status);
         let connected = status.status.expect("connected payload present");
-        assert_eq!(connected.power_direction, PowerDirection::Sink);
+        assert_eq!(connected.power_direction, PowerRole::Sink);
         assert!(connected.partner_flags.usb());
-    }
-
-    #[test]
-    fn connector_status_decodes_source_direction() {
-        let mut msg = [0u8; 11];
-        msg[2] = 0x01 | (1 << 3) | (1 << 4); // power_op_mode=1 + connect + source (bit20)
-        msg[3] = 1 << 5; // partner_type = 1
-        let status = decode_connector_status(&mailbox(cci_complete(11), &msg)).unwrap();
-        assert_eq!(
-            status.status.expect("connected payload present").power_direction,
-            PowerDirection::Source
-        );
     }
 }

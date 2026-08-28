@@ -1,4 +1,4 @@
-use crate::ucsi::{self, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiVersion};
+use crate::ucsi::{self, UcsiSnapshot};
 use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, UcsiSource, common};
 use battery_service_interface::{
     BatteryState, BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit,
@@ -831,23 +831,24 @@ impl Acpi {
 }
 
 impl UcsiSource for Acpi {
-    fn get_version(&self) -> Result<UcsiVersion, Self::Error> {
-        let mailbox = self.ucsi_command(ucsi::control(ucsi::CommandType::GetCapability, 0))?;
-        Ok(ucsi::decode_version(&mailbox)?)
-    }
+    fn get_snapshot(&self, connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        // GET_CAPABILITY carries both the mailbox VERSION word and the PPM
+        // capability payload, so one command yields both.
+        let cap_mailbox = self.ucsi_command(ucsi::control(ucsi::CommandType::GetCapability, 0))?;
+        let version = ucsi::decode_version(&cap_mailbox)?;
+        let capability = ucsi::decode_capability(&cap_mailbox)?;
 
-    fn get_capability(&self) -> Result<UcsiCapability, Self::Error> {
-        let mailbox = self.ucsi_command(ucsi::control(ucsi::CommandType::GetCapability, 0))?;
-        Ok(ucsi::decode_capability(&mailbox)?)
-    }
+        let conn_cap = self.ucsi_command(ucsi::control(ucsi::CommandType::GetConnectorCapability, connector))?;
+        let connector_capability = ucsi::decode_connector_capability(&conn_cap)?;
 
-    fn get_connector_capability(&self, connector: u8) -> Result<UcsiConnectorCapability, Self::Error> {
-        let mailbox = self.ucsi_command(ucsi::control(ucsi::CommandType::GetConnectorCapability, connector))?;
-        Ok(ucsi::decode_connector_capability(&mailbox)?)
-    }
+        let status = self.ucsi_command(ucsi::control(ucsi::CommandType::GetConnectorStatus, connector))?;
+        let connector_status = ucsi::decode_connector_status(&status)?;
 
-    fn get_connector_status(&self, connector: u8) -> Result<UcsiConnectorStatus, Self::Error> {
-        let mailbox = self.ucsi_command(ucsi::control(ucsi::CommandType::GetConnectorStatus, connector))?;
-        Ok(ucsi::decode_connector_status(&mailbox)?)
+        Ok(UcsiSnapshot {
+            version,
+            capability,
+            connector_capability,
+            connector_status,
+        })
     }
 }

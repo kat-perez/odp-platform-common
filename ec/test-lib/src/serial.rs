@@ -17,7 +17,7 @@ use time_alarm_service_interface::{
 };
 use time_alarm_service_relay::{AcpiTimeAlarmRequest, AcpiTimeAlarmResponse};
 
-use crate::ucsi::{UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiVersion};
+use crate::ucsi::UcsiSnapshot;
 
 /// Errors produced by serial data source operations.
 #[derive(Debug)]
@@ -30,8 +30,8 @@ pub enum Error {
     Serialization(String),
     /// Response had an unexpected format
     UnexpectedResponse,
-    /// Operation is not supported by the serial backend (no EC-side peer)
-    Unsupported(&'static str),
+    /// UCSI is not supported by the serial backend (no EC-side peer).
+    Unsupported,
 }
 
 impl std::fmt::Display for Error {
@@ -41,7 +41,7 @@ impl std::fmt::Display for Error {
             Self::Protocol(msg) => write!(f, "serial protocol error: {msg}"),
             Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
             Self::UnexpectedResponse => write!(f, "unexpected response"),
-            Self::Unsupported(what) => write!(f, "unsupported over serial: {what}"),
+            Self::Unsupported => write!(f, "UCSI is unsupported over serial"),
         }
     }
 }
@@ -55,7 +55,7 @@ impl crate::Error for Error {
             Self::Protocol(_) => crate::ErrorKind::Protocol,
             Self::Serialization(_) => crate::ErrorKind::Serialization,
             Self::UnexpectedResponse => crate::ErrorKind::UnexpectedResponse,
-            Self::Unsupported(_) => crate::ErrorKind::Other,
+            Self::Unsupported => crate::ErrorKind::Other,
         }
     }
 }
@@ -552,21 +552,9 @@ impl RtcSource for Serial {
     }
 }
 
-/// The serial backend has no EC-side UCSI relay peer, so every UCSI read is
-/// explicitly unsupported (mapped to [`crate::ErrorKind::Other`]) rather than
-/// faking success.
 impl UcsiSource for Serial {
-    fn get_version(&self) -> Result<UcsiVersion, Self::Error> {
-        Err(Error::Unsupported("UCSI get_version"))
-    }
-    fn get_capability(&self) -> Result<UcsiCapability, Self::Error> {
-        Err(Error::Unsupported("UCSI get_capability"))
-    }
-    fn get_connector_capability(&self, _connector: u8) -> Result<UcsiConnectorCapability, Self::Error> {
-        Err(Error::Unsupported("UCSI get_connector_capability"))
-    }
-    fn get_connector_status(&self, _connector: u8) -> Result<UcsiConnectorStatus, Self::Error> {
-        Err(Error::Unsupported("UCSI get_connector_status"))
+    fn get_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        Err(Error::Unsupported)
     }
 }
 
@@ -577,6 +565,6 @@ mod tests {
 
     #[test]
     fn unsupported_maps_to_other_kind() {
-        assert_eq!(Error::Unsupported("UCSI get_version").kind(), crate::ErrorKind::Other);
+        assert_eq!(Error::Unsupported.kind(), crate::ErrorKind::Other);
     }
 }

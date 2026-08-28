@@ -15,7 +15,7 @@ use battery_service_interface::{BixFixedStrings, BstReturn};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use ec_test_lib::Threshold;
-use ec_test_lib::ucsi::{UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiVersion};
+use ec_test_lib::ucsi::UcsiSnapshot;
 use time_alarm_service_interface::{
     AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
 };
@@ -47,17 +47,8 @@ pub(crate) trait DynSource: Send + Sync {
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds>;
 
     // UCSI — default to unsupported so lightweight UI test doubles need not
-    // implement them; real sources override these via the blanket impl below.
-    fn get_ucsi_version(&self) -> Result<UcsiVersion> {
-        Err(eyre!("UCSI not supported by this source"))
-    }
-    fn get_ucsi_capability(&self) -> Result<UcsiCapability> {
-        Err(eyre!("UCSI not supported by this source"))
-    }
-    fn get_ucsi_connector_capability(&self, _connector: u8) -> Result<UcsiConnectorCapability> {
-        Err(eyre!("UCSI not supported by this source"))
-    }
-    fn get_ucsi_connector_status(&self, _connector: u8) -> Result<UcsiConnectorStatus> {
+    // implement it; real sources override it via the blanket impl below.
+    fn get_ucsi_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot> {
         Err(eyre!("UCSI not supported by this source"))
     }
 }
@@ -66,7 +57,7 @@ pub(crate) trait DynSource: Send + Sync {
 
 impl<T> DynSource for T
 where
-    T: ec_test_lib::Source + Send + Sync,
+    T: ec_test_lib::Source + ec_test_lib::UcsiSource + Send + Sync,
     T::Error: Send + Sync + 'static,
 {
     fn get_bst(&self) -> Result<BstReturn> {
@@ -114,17 +105,8 @@ where
         ec_test_lib::RtcSource::get_timer_value(self, timer_id).map_err(Into::into)
     }
 
-    fn get_ucsi_version(&self) -> Result<UcsiVersion> {
-        ec_test_lib::UcsiSource::get_version(self).map_err(Into::into)
-    }
-    fn get_ucsi_capability(&self) -> Result<UcsiCapability> {
-        ec_test_lib::UcsiSource::get_capability(self).map_err(Into::into)
-    }
-    fn get_ucsi_connector_capability(&self, connector: u8) -> Result<UcsiConnectorCapability> {
-        ec_test_lib::UcsiSource::get_connector_capability(self, connector).map_err(Into::into)
-    }
-    fn get_ucsi_connector_status(&self, connector: u8) -> Result<UcsiConnectorStatus> {
-        ec_test_lib::UcsiSource::get_connector_status(self, connector).map_err(Into::into)
+    fn get_ucsi_snapshot(&self, connector: u8) -> Result<UcsiSnapshot> {
+        ec_test_lib::UcsiSource::get_snapshot(self, connector).map_err(Into::into)
     }
 }
 

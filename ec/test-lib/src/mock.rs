@@ -1,4 +1,4 @@
-use crate::ucsi::{PowerDirection, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiVersion};
+use crate::ucsi::{PowerRole, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiSnapshot};
 use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, UcsiSource};
 use battery_service_interface::{
     BatteryState, BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit,
@@ -450,13 +450,10 @@ impl RtcSource for Mock {
 }
 
 impl UcsiSource for Mock {
-    fn get_version(&self) -> Result<UcsiVersion, Self::Error> {
-        Ok(UcsiVersion(0x0120))
-    }
-    fn get_capability(&self) -> Result<UcsiCapability, Self::Error> {
+    fn get_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot, Self::Error> {
         let mut attributes = Attributes::default();
         attributes.set_battery_charging(true).set_usb_power_delivery(true);
-        Ok(UcsiCapability {
+        let capability = UcsiCapability {
             attributes,
             num_connectors: 1,
             optional_features: Default::default(),
@@ -464,31 +461,36 @@ impl UcsiSource for Mock {
             bcd_battery_charging_spec: 0x0120,
             bcd_usb_pd_spec: 0x0300,
             bcd_type_c_spec: 0x0200,
-        })
-    }
-    fn get_connector_capability(&self, _connector: u8) -> Result<UcsiConnectorCapability, Self::Error> {
-        let mut cap = UcsiConnectorCapability::default();
-        cap.set_operation_mode(
-            *OperationModeFlags::default()
-                .set_drp(true)
-                .set_usb2(true)
-                .set_usb3(true),
-        )
-        .set_provider(true)
-        .set_consumer(true);
-        Ok(cap)
-    }
-    fn get_connector_status(&self, _connector: u8) -> Result<UcsiConnectorStatus, Self::Error> {
+        };
+
+        let mut connector_capability = UcsiConnectorCapability::default();
+        connector_capability
+            .set_operation_mode(
+                *OperationModeFlags::default()
+                    .set_drp(true)
+                    .set_usb2(true)
+                    .set_usb3(true),
+            )
+            .set_provider(true)
+            .set_consumer(true);
+
         let mut partner_flags = ConnectorPartnerFlags::default();
         partner_flags.set_usb(true);
-        Ok(UcsiConnectorStatus {
+        let connector_status = UcsiConnectorStatus {
             status_change: Default::default(),
             connect_status: true,
             status: Some(ConnectedStatus {
-                power_direction: PowerDirection::Sink,
+                power_direction: PowerRole::Sink,
                 partner_flags,
                 ..Default::default()
             }),
+        };
+
+        Ok(UcsiSnapshot {
+            version: 0x0120,
+            capability,
+            connector_capability,
+            connector_status,
         })
     }
 }

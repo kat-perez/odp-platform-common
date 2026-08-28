@@ -9,7 +9,7 @@ use crate::battery::{poll_bix, poll_bst};
 use crate::source::DynSource;
 use crate::state::{
     BatteryCommand, BatteryState, FanRpmBounds, FanStateLevels, RtcState, SystemState, ThermalCommand, ThermalState,
-    UCSI_CONNECTOR, UcsiState,
+    UcsiState,
 };
 
 // ── Battery ───────────────────────────────────────────────────────────────────
@@ -389,6 +389,9 @@ impl SystemUpdater {
 
 // ── UCSI (USB-C) ──────────────────────────────────────────────────────────────
 
+/// The single connector queried by the host UCSI slice.
+const UCSI_CONNECTOR: u8 = 1;
+
 /// Polls the UCSI version, PPM capability, and connector state on every tick.
 pub struct UcsiUpdater {
     source: Arc<dyn DynSource>,
@@ -401,22 +404,14 @@ impl UcsiUpdater {
     }
 
     #[tracing::instrument(skip_all)]
-    fn update(&mut self) {
+    fn update(&self) {
         // Reads may be steadily unsupported (e.g. serial has no UCSI peer); the
-        // Fetched cells carry the error to the UI, so we don't warn every tick.
-        let version = self.source.get_ucsi_version();
-        let capability = self.source.get_ucsi_capability();
-        let connector_capability = self.source.get_ucsi_connector_capability(UCSI_CONNECTOR);
-        let connector_status = self.source.get_ucsi_connector_status(UCSI_CONNECTOR);
-
-        let mut s = self.state.write().expect("state RwLock poisoned");
-        s.version = Some(version);
-        s.capability = Some(capability);
-        s.connector_capability = Some(connector_capability);
-        s.connector_status = Some(connector_status);
+        // Fetched cell carries the error to the UI, so we don't warn every tick.
+        let snapshot = self.source.get_ucsi_snapshot(UCSI_CONNECTOR);
+        self.state.write().expect("state RwLock poisoned").snapshot = Some(snapshot);
     }
 
-    pub async fn run(mut self, interval: Duration) {
+    pub async fn run(self, interval: Duration) {
         info!(interval_ms = interval.as_millis(), "UCSI updater started");
         self.update();
         loop {
@@ -429,24 +424,34 @@ impl UcsiUpdater {
 #[cfg(test)]
 mod ucsi_tests {
     use super::*;
+    use crate::ucsi::Ucsi;
     use ec_test_lib::mock::Mock;
-    use ec_test_lib::ucsi::{PowerDirection, UcsiVersion};
+    use ratatui::{buffer::Buffer, layout::Rect};
 
+    /// End-to-end: Mock source → updater snapshot → rendered USB-C rows.
     #[test]
-    fn update_populates_cells_from_source() {
+    fn mock_snapshot_renders_expected_rows() {
         let source: Arc<dyn DynSource> = Arc::new(Mock::default());
         let state = Arc::new(RwLock::new(UcsiState::default()));
-        let mut updater = UcsiUpdater::new(source, Arc::clone(&state));
+        UcsiUpdater::new(source, Arc::clone(&state)).update();
 
-        updater.update();
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        Ucsi::new().render(&state.read().unwrap(), area, &mut buf);
+        let text: String = buf.content.iter().map(|c| c.symbol()).collect();
 
-        let s = state.read().unwrap();
-        assert_eq!(s.version.as_ref().unwrap().as_ref().unwrap(), &UcsiVersion(0x0120));
-        assert_eq!(s.capability.as_ref().unwrap().as_ref().unwrap().num_connectors, 1);
-        assert!(s.connector_capability.as_ref().unwrap().as_ref().unwrap().provider());
-        let status = s.connector_status.as_ref().unwrap().as_ref().unwrap();
-        assert!(status.connect_status);
-        let connected = status.status.expect("connected payload present");
-        assert_eq!(connected.power_direction, PowerDirection::Sink);
+        for expect in [
+            "Version",
+            "1.2",
+            "Capability",
+            "1 connector",
+            "Conn 1",
+            "provider/consumer",
+            "Status",
+            "Connected",
+            "Sink",
+        ] {
+            assert!(text.contains(expect), "missing {expect:?} in rendered output:\n{text}");
+        }
     }
 }

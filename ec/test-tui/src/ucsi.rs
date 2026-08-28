@@ -1,7 +1,7 @@
 use crate::common;
 use crate::common::SYMBOLS;
-use crate::state::{Fetched, UcsiState};
-use ec_test_lib::ucsi::{PowerDirection, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus};
+use crate::state::UcsiState;
+use ec_test_lib::ucsi::{PowerRole, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus};
 use ratatui::{
     buffer::Buffer,
     crossterm::event::Event,
@@ -34,7 +34,7 @@ impl Ucsi {
     /// Both the tab and the dashboard card render the same metric rows inside a
     /// bordered block; only the title and border colour differ.
     fn render_titled(&self, title: &str, border: Color, state: &UcsiState, area: Rect, buf: &mut Buffer) {
-        let is_healthy = matches!(state.connector_status, Some(Ok(_)));
+        let is_healthy = matches!(state.snapshot, Some(Ok(_)));
         let block = Block::bordered()
             .title(common::status_title(title, is_healthy))
             .border_style(border);
@@ -44,24 +44,27 @@ impl Ucsi {
     }
 }
 
-// ── Shared row/summary builder ────────────────────────────────────────────────
+// ── Row builder ───────────────────────────────────────────────────────────────
 
+/// One honest UCSI row while pending/failed; four compact rows once the
+/// fail-fast snapshot lands.
 fn rows(s: &UcsiState) -> Vec<Line<'static>> {
+    let snapshot = match &s.snapshot {
+        None => return vec![common::metric_row("UCSI", "Pending...".to_string(), LABEL_COLOR)],
+        Some(Err(e)) => return vec![common::metric_row("UCSI", format!("Error: {e}"), LABEL_COLOR)],
+        Some(Ok(snapshot)) => snapshot,
+    };
     vec![
-        common::metric_row("Version", cell(&s.version, |v| v.to_string()), LABEL_COLOR),
-        common::metric_row("Capability", cell(&s.capability, capability_summary), LABEL_COLOR),
-        common::metric_row("Conn 1", cell(&s.connector_capability, connector_summary), LABEL_COLOR),
-        common::metric_row("Status", cell(&s.connector_status, status_summary), LABEL_COLOR),
+        common::metric_row("Version", version_bcd(snapshot.version), LABEL_COLOR),
+        common::metric_row("Capability", capability_summary(&snapshot.capability), LABEL_COLOR),
+        common::metric_row("Conn 1", connector_summary(&snapshot.connector_capability), LABEL_COLOR),
+        common::metric_row("Status", status_summary(&snapshot.connector_status), LABEL_COLOR),
     ]
 }
 
-/// Render a fetched cell as honest pending / error / value text.
-fn cell<T>(fetched: &Fetched<T>, f: impl FnOnce(&T) -> String) -> String {
-    match fetched {
-        None => "Pending...".to_string(),
-        Some(Err(e)) => format!("Error: {e}"),
-        Some(Ok(v)) => f(v),
-    }
+/// Format the BCD VERSION word (`0x0120` → `1.2`) at the presentation boundary.
+fn version_bcd(v: u16) -> String {
+    format!("{}.{}", v >> 8, (v >> 4) & 0xf)
 }
 
 fn capability_summary(cap: &UcsiCapability) -> String {
@@ -70,87 +73,31 @@ fn capability_summary(cap: &UcsiCapability) -> String {
     } else {
         "connectors"
     };
-    let pd_support = if cap.attributes.usb_power_delivery() {
-        "USB-PD"
-    } else {
-        "no USB-PD"
-    };
-    format!(
-        "{} {connector} {} {pd_support} {} PD {:x}.{:02x}",
-        cap.num_connectors,
-        SYMBOLS.mid_dot,
-        SYMBOLS.mid_dot,
-        cap.bcd_usb_pd_spec >> 8,
-        cap.bcd_usb_pd_spec & 0xff,
-    )
+    format!("{} {connector}", cap.num_connectors)
 }
 
 fn connector_summary(cap: &UcsiConnectorCapability) -> String {
-    let modes_flags = cap.operation_mode();
-    let mut modes = Vec::new();
-    if modes_flags.drp() {
-        modes.push("DRP");
-    }
-    if modes_flags.usb2() {
-        modes.push("USB2");
-    }
-    if modes_flags.usb3() {
-        modes.push("USB3");
-    }
-    let roles = match (cap.provider(), cap.consumer()) {
+    match (cap.provider(), cap.consumer()) {
         (true, true) => "provider/consumer",
         (true, false) => "provider",
         (false, true) => "consumer",
         (false, false) => "-",
-    };
-    let modes = if modes.is_empty() {
-        "none".to_string()
-    } else {
-        modes.join("/")
-    };
-    format!("{modes} {} {roles}", SYMBOLS.mid_dot)
+    }
+    .to_string()
 }
 
 fn status_summary(status: &UcsiConnectorStatus) -> String {
     if !status.connect_status {
         return "Disconnected".to_string();
     }
-    let (direction, partner) = match &status.status {
+    match &status.status {
         Some(connected) => {
             let direction = match connected.power_direction {
-                PowerDirection::Sink => "Sink",
-                PowerDirection::Source => "Source",
+                PowerRole::Sink => "Sink",
+                PowerRole::Source => "Source",
             };
-            let partner = if connected.partner_flags.usb() {
-                "USB"
-            } else {
-                "partner"
-            };
-            (direction, partner)
+            format!("Connected {} {direction}", SYMBOLS.mid_dot)
         }
-        None => ("?", "partner"),
-    };
-    format!(
-        "Connected {} {direction} {} {partner}",
-        SYMBOLS.mid_dot, SYMBOLS.mid_dot
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ec_test_lib::UcsiSource;
-    use ec_test_lib::mock::Mock;
-
-    #[test]
-    fn capability_summary_separates_connector_and_pd_details() {
-        let cap = Mock::default().get_capability().unwrap();
-        assert_eq!(capability_summary(&cap), "1 connector · USB-PD · PD 3.00");
-    }
-
-    #[test]
-    fn status_summary_renders_connected_sink() {
-        let status = Mock::default().get_connector_status(1).unwrap();
-        assert_eq!(status_summary(&status), "Connected · Sink · USB");
+        None => "Connected".to_string(),
     }
 }

@@ -5,7 +5,7 @@ use time_alarm_service_interface::{
     AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
 };
 
-use crate::ucsi::{UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiVersion};
+use crate::ucsi::UcsiSnapshot;
 
 pub(crate) mod common;
 
@@ -161,22 +161,13 @@ pub trait RtcSource: ErrorType {
 
 /// Trait for host-side UCSI data sources (read-only PPM/connector queries).
 pub trait UcsiSource: ErrorType {
-    /// Get the UCSI interface version - see UCSI mailbox VERSION.
-    fn get_version(&self) -> Result<UcsiVersion, Self::Error>;
-
-    /// Get PPM capabilities - see GET_CAPABILITY.
-    fn get_capability(&self) -> Result<UcsiCapability, Self::Error>;
-
-    /// Get per-connector capabilities - see GET_CONNECTOR_CAPABILITY.
-    fn get_connector_capability(&self, connector: u8) -> Result<UcsiConnectorCapability, Self::Error>;
-
-    /// Get connector status - see GET_CONNECTOR_STATUS.
-    fn get_connector_status(&self, connector: u8) -> Result<UcsiConnectorStatus, Self::Error>;
+    /// Fetch one fail-fast snapshot of connector `connector`'s UCSI state.
+    fn get_snapshot(&self, connector: u8) -> Result<UcsiSnapshot, Self::Error>;
 }
 
 /// Marker trait implemented by all EC data sources.
-pub trait Source: ThermalSource + BatterySource + RtcSource + UcsiSource {}
-impl<T: ThermalSource + BatterySource + RtcSource + UcsiSource> Source for T {}
+pub trait Source: ThermalSource + BatterySource + RtcSource {}
+impl<T: ThermalSource + BatterySource + RtcSource> Source for T {}
 
 // Blanket impls so that Arc<S> can be used anywhere a source trait is required.
 // This lets modules share one source instance via Arc instead of each owning a clone.
@@ -253,21 +244,6 @@ impl<T: RtcSource> RtcSource for Arc<T> {
     }
     fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
         self.as_ref().clear_wake_status(timer_id)
-    }
-}
-
-impl<T: UcsiSource> UcsiSource for Arc<T> {
-    fn get_version(&self) -> Result<UcsiVersion, Self::Error> {
-        self.as_ref().get_version()
-    }
-    fn get_capability(&self) -> Result<UcsiCapability, Self::Error> {
-        self.as_ref().get_capability()
-    }
-    fn get_connector_capability(&self, connector: u8) -> Result<UcsiConnectorCapability, Self::Error> {
-        self.as_ref().get_connector_capability(connector)
-    }
-    fn get_connector_status(&self, connector: u8) -> Result<UcsiConnectorStatus, Self::Error> {
-        self.as_ref().get_connector_status(connector)
     }
 }
 
