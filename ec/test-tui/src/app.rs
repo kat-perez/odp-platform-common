@@ -1,9 +1,10 @@
 use crate::battery::Battery;
 use crate::logging::LogBuffer;
 use crate::rtc::Rtc;
-use crate::state::{BatteryCommand, BatteryState, RtcState, SystemState, ThermalCommand, ThermalState};
+use crate::state::{BatteryCommand, BatteryState, RtcState, SystemState, ThermalCommand, ThermalState, UcsiState};
 use crate::system::System;
 use crate::thermal::Thermal;
+use crate::ucsi::Ucsi;
 
 use crate::common::SYMBOLS;
 
@@ -33,6 +34,7 @@ pub(crate) enum TabModule {
     Thermal(Thermal),
     Rtc(Rtc),
     System(System),
+    Ucsi(Ucsi),
 }
 
 impl TabModule {
@@ -42,6 +44,7 @@ impl TabModule {
             Self::Thermal(_) => "Thermal",
             Self::Rtc(_) => "RTC",
             Self::System(_) => "System",
+            Self::Ucsi(_) => "USB-C",
         }
     }
 
@@ -51,6 +54,7 @@ impl TabModule {
             Self::Thermal(m) => m.handle_event(evt),
             Self::Rtc(m) => m.handle_event(evt),
             Self::System(m) => m.handle_event(evt),
+            Self::Ucsi(m) => m.handle_event(evt),
         }
     }
 
@@ -84,6 +88,12 @@ impl TabModule {
         }
     }
 
+    pub(crate) fn render_ucsi(&self, state: &UcsiState, area: Rect, buf: &mut Buffer) {
+        if let Self::Ucsi(m) = self {
+            m.render(state, area, buf);
+        }
+    }
+
     pub(crate) fn render_card_power(&self, state: &BatteryState, area: Rect, buf: &mut Buffer) {
         if let Self::Power(m) = self {
             m.render_card(state, area, buf);
@@ -108,11 +118,17 @@ impl TabModule {
         }
     }
 
+    pub(crate) fn render_card_ucsi(&self, state: &UcsiState, area: Rect, buf: &mut Buffer) {
+        if let Self::Ucsi(m) = self {
+            m.render_card(state, area, buf);
+        }
+    }
+
     pub(crate) fn is_popup_open(&self) -> bool {
         match self {
             Self::Power(m) => m.is_popup_open(),
             Self::Thermal(m) => m.is_popup_open(),
-            Self::Rtc(_) | Self::System(_) => false,
+            Self::Rtc(_) | Self::System(_) | Self::Ucsi(_) => false,
         }
     }
 }
@@ -137,17 +153,20 @@ enum SelectedTab {
     TabRTC,
     #[strum(to_string = "System")]
     TabSystem,
+    #[strum(to_string = "USB-C")]
+    TabUsbC,
 }
 
 /// The main application: holds UI state and a read handle on the shared data.
 pub struct App {
     run_state: RunState,
     selected_tab: SelectedTab,
-    modules: [TabModule; 4],
+    modules: [TabModule; 5],
     battery_state: Arc<RwLock<BatteryState>>,
     thermal_state: Arc<RwLock<ThermalState>>,
     rtc_state: Arc<RwLock<RtcState>>,
     system_state: Arc<RwLock<SystemState>>,
+    ucsi_state: Arc<RwLock<UcsiState>>,
     log_buffer: LogBuffer,
     log_visible: bool,
     log_scroll: usize,
@@ -159,11 +178,13 @@ impl App {
     /// * `battery_state` / `thermal_state` / `rtc_state` / `system_state` —
     ///   populated by the background updater threads.
     /// * `battery_tx` / `thermal_tx` — command channels for hardware write-backs.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         battery_state: Arc<RwLock<BatteryState>>,
         thermal_state: Arc<RwLock<ThermalState>>,
         rtc_state: Arc<RwLock<RtcState>>,
         system_state: Arc<RwLock<SystemState>>,
+        ucsi_state: Arc<RwLock<UcsiState>>,
         battery_tx: mpsc::Sender<BatteryCommand>,
         thermal_tx: mpsc::Sender<ThermalCommand>,
         log_buffer: LogBuffer,
@@ -173,6 +194,7 @@ impl App {
             TabModule::Thermal(Thermal::new(thermal_tx)),
             TabModule::Rtc(Rtc::new()),
             TabModule::System(System::new()),
+            TabModule::Ucsi(Ucsi::new()),
         ];
 
         let app = Self {
@@ -183,6 +205,7 @@ impl App {
             thermal_state,
             rtc_state,
             system_state,
+            ucsi_state,
             log_buffer,
             log_visible: false,
             log_scroll: 0,
@@ -244,6 +267,7 @@ impl App {
                 KeyCode::Char('3') => self.selected_tab = SelectedTab::TabThermal,
                 KeyCode::Char('4') => self.selected_tab = SelectedTab::TabRTC,
                 KeyCode::Char('5') => self.selected_tab = SelectedTab::TabSystem,
+                KeyCode::Char('6') => self.selected_tab = SelectedTab::TabUsbC,
                 KeyCode::Char('l') => {
                     self.log_visible = !self.log_visible;
                     if self.log_visible {
@@ -313,6 +337,7 @@ impl App {
                     let thm = self.thermal_state.read().expect("thermal RwLock poisoned");
                     module.render_system(&sys, Some(&thm), inner, buf);
                 }
+                4 => module.render_ucsi(&self.ucsi_state.read().expect("ucsi RwLock poisoned"), inner, buf),
                 _ => unreachable!(),
             }
         }
@@ -325,19 +350,27 @@ impl App {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let [row0, row1] = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(inner);
-        let [card00, card01] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row0);
-        let [card10, card11] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row1);
+        let [top, bottom] = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(inner);
+        let [card_battery, card_thermal, card_ucsi] = Layout::horizontal([
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 3),
+        ])
+        .areas(top);
+        let [card_rtc, card_system] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(bottom);
 
         let bat = self.battery_state.read().expect("battery RwLock poisoned");
         let thm = self.thermal_state.read().expect("thermal RwLock poisoned");
         let rtc = self.rtc_state.read().expect("rtc RwLock poisoned");
         let sys = self.system_state.read().expect("system RwLock poisoned");
+        let ucsi = self.ucsi_state.read().expect("ucsi RwLock poisoned");
 
-        self.modules[0].render_card_power(&bat, card00, buf);
-        self.modules[1].render_card_thermal(&thm, card01, buf);
-        self.modules[2].render_card_rtc(&rtc, card10, buf);
-        self.modules[3].render_card_system(&sys, card11, buf);
+        self.modules[0].render_card_power(&bat, card_battery, buf);
+        self.modules[1].render_card_thermal(&thm, card_thermal, buf);
+        self.modules[2].render_card_rtc(&rtc, card_rtc, buf);
+        self.modules[3].render_card_system(&sys, card_system, buf);
+        self.modules[4].render_card_ucsi(&ucsi, card_ucsi, buf);
     }
 }
 
@@ -439,7 +472,7 @@ impl App {
         let mut spans = vec![
             Span::styled(format!(" {} {} ", SYMBOLS.arrow_left, SYMBOLS.arrow_right), key),
             Span::styled(" switch tab  ", desc),
-            Span::styled(" 1-5 ", key),
+            Span::styled(" 1-6 ", key),
             Span::styled(" jump to tab  ", desc),
             Span::styled(" l ", key),
             Span::styled(log_hint, desc),
@@ -469,6 +502,7 @@ impl SelectedTab {
             Self::TabThermal => Some(1),
             Self::TabRTC => Some(2),
             Self::TabSystem => Some(3),
+            Self::TabUsbC => Some(4),
         }
     }
 
@@ -519,6 +553,68 @@ impl SelectedTab {
             Self::TabThermal => tailwind::ORANGE,
             Self::TabRTC => tailwind::VIOLET,
             Self::TabSystem => tailwind::EMERALD,
+            Self::TabUsbC => tailwind::CYAN,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{RtcState, TimerData};
+    use ratatui::{buffer::Buffer, layout::Rect};
+    use time_alarm_service_interface::AlarmTimerSeconds;
+
+    fn test_app(rtc: RtcState) -> App {
+        let (battery_tx, _battery_rx) = mpsc::channel();
+        let (thermal_tx, _thermal_rx) = mpsc::channel();
+        App::new(
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(rtc)),
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(Default::default())),
+            battery_tx,
+            thermal_tx,
+            LogBuffer::new(),
+        )
+    }
+
+    /// Collect the buffer's rows as strings for text assertions.
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    /// At the minimum 80x24 terminal the dashboard must still show the RTC
+    /// card's AC and DC timer summaries alongside the USB-C card.
+    #[test]
+    fn dashboard_shows_rtc_timers_and_usbc_at_80x24() {
+        let mut rtc = RtcState::default();
+        rtc.timers = [
+            TimerData {
+                value: Some(Ok(AlarmTimerSeconds(30))),
+                ..Default::default()
+            },
+            TimerData {
+                value: Some(Ok(AlarmTimerSeconds(45))),
+                ..Default::default()
+            },
+        ];
+
+        let app = test_app(rtc);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        (&app).render(area, &mut buf);
+        let rows = rows(&buf);
+        let text = rows.join("\n");
+
+        let has_ac = rows.iter().any(|r| r.contains("AC") && r.contains("30s remaining"));
+        let has_dc = rows.iter().any(|r| r.contains("DC") && r.contains("45s remaining"));
+        assert!(has_ac, "AC timer summary not visible:\n{text}");
+        assert!(has_dc, "DC timer summary not visible:\n{text}");
+        let has_ucsi = rows.iter().any(|r| r.contains("UCSI") && r.contains("Pending"));
+        assert!(has_ucsi, "USB-C card body not visible:\n{text}");
     }
 }

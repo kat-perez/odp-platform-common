@@ -1,4 +1,4 @@
-use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, common};
+use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, UcsiSource, common};
 use battery_service_interface::{BixFixedStrings, BstReturn, Btp};
 use battery_service_relay::{AcpiBatteryRequest, AcpiBatteryResponse};
 use embedded_services::relay::SerializableMessage;
@@ -17,6 +17,8 @@ use time_alarm_service_interface::{
 };
 use time_alarm_service_relay::{AcpiTimeAlarmRequest, AcpiTimeAlarmResponse};
 
+use crate::ucsi::UcsiSnapshot;
+
 /// Errors produced by serial data source operations.
 #[derive(Debug)]
 pub enum Error {
@@ -28,6 +30,8 @@ pub enum Error {
     Serialization(String),
     /// Response had an unexpected format
     UnexpectedResponse,
+    /// UCSI is not supported by the serial backend (no EC-side peer).
+    Unsupported,
 }
 
 impl std::fmt::Display for Error {
@@ -37,6 +41,7 @@ impl std::fmt::Display for Error {
             Self::Protocol(msg) => write!(f, "serial protocol error: {msg}"),
             Self::Serialization(msg) => write!(f, "serialization error: {msg}"),
             Self::UnexpectedResponse => write!(f, "unexpected response"),
+            Self::Unsupported => write!(f, "UCSI is unsupported over serial"),
         }
     }
 }
@@ -50,6 +55,7 @@ impl crate::Error for Error {
             Self::Protocol(_) => crate::ErrorKind::Protocol,
             Self::Serialization(_) => crate::ErrorKind::Serialization,
             Self::UnexpectedResponse => crate::ErrorKind::UnexpectedResponse,
+            Self::Unsupported => crate::ErrorKind::Other,
         }
     }
 }
@@ -543,5 +549,22 @@ impl RtcSource for Serial {
         } else {
             Err(Error::UnexpectedResponse)
         }
+    }
+}
+
+impl UcsiSource for Serial {
+    fn get_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        Err(Error::Unsupported)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Error as _;
+
+    #[test]
+    fn unsupported_maps_to_other_kind() {
+        assert_eq!(Error::Unsupported.kind(), crate::ErrorKind::Other);
     }
 }

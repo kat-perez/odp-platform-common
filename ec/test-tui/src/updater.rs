@@ -9,6 +9,7 @@ use crate::battery::{poll_bix, poll_bst};
 use crate::source::DynSource;
 use crate::state::{
     BatteryCommand, BatteryState, FanRpmBounds, FanStateLevels, RtcState, SystemState, ThermalCommand, ThermalState,
+    UcsiState,
 };
 
 // ── Battery ───────────────────────────────────────────────────────────────────
@@ -382,6 +383,75 @@ impl SystemUpdater {
         loop {
             tokio::time::sleep(interval).await;
             self.update();
+        }
+    }
+}
+
+// ── UCSI (USB-C) ──────────────────────────────────────────────────────────────
+
+/// The single connector queried by the host UCSI slice.
+const UCSI_CONNECTOR: u8 = 1;
+
+/// Polls the UCSI version, PPM capability, and connector state on every tick.
+pub struct UcsiUpdater {
+    source: Arc<dyn DynSource>,
+    state: Arc<RwLock<UcsiState>>,
+}
+
+impl UcsiUpdater {
+    pub fn new(source: Arc<dyn DynSource>, state: Arc<RwLock<UcsiState>>) -> Self {
+        Self { source, state }
+    }
+
+    #[tracing::instrument(skip_all)]
+    fn update(&self) {
+        // Reads may be steadily unsupported (e.g. serial has no UCSI peer); the
+        // Fetched cell carries the error to the UI, so we don't warn every tick.
+        let snapshot = self.source.get_ucsi_snapshot(UCSI_CONNECTOR);
+        self.state.write().expect("state RwLock poisoned").snapshot = Some(snapshot);
+    }
+
+    pub async fn run(self, interval: Duration) {
+        info!(interval_ms = interval.as_millis(), "UCSI updater started");
+        self.update();
+        loop {
+            tokio::time::sleep(interval).await;
+            self.update();
+        }
+    }
+}
+
+#[cfg(test)]
+mod ucsi_tests {
+    use super::*;
+    use crate::ucsi::Ucsi;
+    use ec_test_lib::mock::Mock;
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    /// End-to-end: Mock source → updater snapshot → rendered USB-C rows.
+    #[test]
+    fn mock_snapshot_renders_expected_rows() {
+        let source: Arc<dyn DynSource> = Arc::new(Mock::default());
+        let state = Arc::new(RwLock::new(UcsiState::default()));
+        UcsiUpdater::new(source, Arc::clone(&state)).update();
+
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        Ucsi::new().render(&state.read().unwrap(), area, &mut buf);
+        let text: String = buf.content.iter().map(|c| c.symbol()).collect();
+
+        for expect in [
+            "Version",
+            "1.2",
+            "Capability",
+            "1 connector",
+            "Conn 1",
+            "provider/consumer",
+            "Status",
+            "Connected",
+            "Sink",
+        ] {
+            assert!(text.contains(expect), "missing {expect:?} in rendered output:\n{text}");
         }
     }
 }

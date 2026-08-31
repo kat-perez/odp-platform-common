@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use battery_service_interface::{BixFixedStrings, BstReturn};
 use color_eyre::Result;
+use color_eyre::eyre::eyre;
 use ec_test_lib::Threshold;
+use ec_test_lib::ucsi::UcsiSnapshot;
 use time_alarm_service_interface::{
     AcpiTimerId, AcpiTimestamp, AlarmExpiredWakePolicy, AlarmTimerSeconds, TimeAlarmDeviceCapabilities, TimerStatus,
 };
@@ -43,13 +45,19 @@ pub(crate) trait DynSource: Send + Sync {
     fn get_wake_status(&self, timer_id: AcpiTimerId) -> Result<TimerStatus>;
     fn get_expired_timer_wake_policy(&self, timer_id: AcpiTimerId) -> Result<AlarmExpiredWakePolicy>;
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds>;
+
+    // UCSI — default to unsupported so lightweight UI test doubles need not
+    // implement it; real sources override it via the blanket impl below.
+    fn get_ucsi_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot> {
+        Err(eyre!("UCSI not supported by this source"))
+    }
 }
 
 // ── Blanket impl ─────────────────────────────────────────────────────────────
 
 impl<T> DynSource for T
 where
-    T: ec_test_lib::Source + Send + Sync,
+    T: ec_test_lib::Source + ec_test_lib::UcsiSource + Send + Sync,
     T::Error: Send + Sync + 'static,
 {
     fn get_bst(&self) -> Result<BstReturn> {
@@ -95,6 +103,10 @@ where
     }
     fn get_timer_value(&self, timer_id: AcpiTimerId) -> Result<AlarmTimerSeconds> {
         ec_test_lib::RtcSource::get_timer_value(self, timer_id).map_err(Into::into)
+    }
+
+    fn get_ucsi_snapshot(&self, connector: u8) -> Result<UcsiSnapshot> {
+        ec_test_lib::UcsiSource::get_snapshot(self, connector).map_err(Into::into)
     }
 }
 

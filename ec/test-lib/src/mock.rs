@@ -1,8 +1,12 @@
-use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold};
+use crate::ucsi::{PowerRole, UcsiCapability, UcsiConnectorCapability, UcsiConnectorStatus, UcsiSnapshot};
+use crate::{BatterySource, ErrorType, RtcSource, ThermalSource, Threshold, UcsiSource};
 use battery_service_interface::{
     BatteryState, BatterySwapCapability, BatteryTechnology, BixFixedStrings, BstReturn, PowerUnit,
 };
 use embedded_mcu_hal::time::{Datetime, DatetimeFields, Month};
+use embedded_usb_pd::ucsi::v1_2::lpm::get_connector_capability::OperationModeFlags;
+use embedded_usb_pd::ucsi::v1_2::lpm::get_connector_status::{ConnectedStatus, ConnectorPartnerFlags};
+use embedded_usb_pd::ucsi::v1_2::ppm::get_capability::Attributes;
 use std::sync::Mutex;
 use std::time::Instant;
 use time_alarm_service_interface::{
@@ -442,5 +446,72 @@ impl RtcSource for Mock {
     fn clear_wake_status(&self, timer_id: AcpiTimerId) -> Result<(), Self::Error> {
         self.rtc.lock().unwrap().timers[timer_id as usize].timer_status = TimerStatus(0);
         Ok(())
+    }
+}
+
+impl UcsiSource for Mock {
+    fn get_snapshot(&self, connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        // The mock exposes a single connector; reject anything else.
+        if connector != 1 {
+            return Err(Error::InvalidData);
+        }
+        let mut attributes = Attributes::default();
+        attributes.set_battery_charging(true).set_usb_power_delivery(true);
+        let capability = UcsiCapability {
+            attributes,
+            num_connectors: 1,
+            optional_features: Default::default(),
+            num_alt_modes: 0,
+            bcd_battery_charging_spec: 0x0120,
+            bcd_usb_pd_spec: 0x0300,
+            bcd_type_c_spec: 0x0200,
+        };
+
+        let mut connector_capability = UcsiConnectorCapability::default();
+        connector_capability
+            .set_operation_mode(
+                *OperationModeFlags::default()
+                    .set_drp(true)
+                    .set_usb2(true)
+                    .set_usb3(true),
+            )
+            .set_provider(true)
+            .set_consumer(true);
+
+        let mut partner_flags = ConnectorPartnerFlags::default();
+        partner_flags.set_usb(true);
+        let connector_status = UcsiConnectorStatus {
+            status_change: Default::default(),
+            connect_status: true,
+            status: Some(ConnectedStatus {
+                power_direction: PowerRole::Sink,
+                partner_flags,
+                ..Default::default()
+            }),
+        };
+
+        Ok(UcsiSnapshot {
+            version: 0x0120,
+            capability,
+            connector_capability,
+            connector_status,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mock models a single-connector PPM, so only connector 1 is valid.
+    #[test]
+    fn get_snapshot_rejects_unknown_connector() {
+        assert!(matches!(Mock::new().get_snapshot(2), Err(Error::InvalidData)));
+    }
+
+    #[test]
+    fn get_snapshot_accepts_connector_one() {
+        let snapshot = Mock::new().get_snapshot(1).expect("connector 1 snapshot");
+        assert_eq!(snapshot.version, 0x0120);
     }
 }
