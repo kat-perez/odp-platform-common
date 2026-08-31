@@ -450,7 +450,11 @@ impl RtcSource for Mock {
 }
 
 impl UcsiSource for Mock {
-    fn get_snapshot(&self, _connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+    fn get_snapshot(&self, connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        // The mock exposes a single connector; reject anything else.
+        if connector != 1 {
+            return Err(Error::InvalidData);
+        }
         let mut attributes = Attributes::default();
         attributes.set_battery_charging(true).set_usb_power_delivery(true);
         let capability = UcsiCapability {
@@ -492,5 +496,22 @@ impl UcsiSource for Mock {
             connector_capability,
             connector_status,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mock models a single-connector PPM, so only connector 1 is valid.
+    #[test]
+    fn get_snapshot_rejects_unknown_connector() {
+        assert!(matches!(Mock::new().get_snapshot(2), Err(Error::InvalidData)));
+    }
+
+    #[test]
+    fn get_snapshot_accepts_connector_one() {
+        let snapshot = Mock::new().get_snapshot(1).expect("connector 1 snapshot");
+        assert_eq!(snapshot.version, 0x0120);
     }
 }

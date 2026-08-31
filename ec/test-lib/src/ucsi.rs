@@ -123,6 +123,17 @@ impl fmt::Display for MailboxError {
 
 impl std::error::Error for MailboxError {}
 
+impl crate::Error for MailboxError {
+    fn kind(&self) -> crate::ErrorKind {
+        match self {
+            // A nonzero FF-A transport status is an I/O-level failure; every
+            // other variant is a malformed or invalid mailbox response.
+            Self::FfaStatus(_) => crate::ErrorKind::Io,
+            _ => crate::ErrorKind::InvalidData,
+        }
+    }
+}
+
 /// Validate the 48-byte mailbox length and CCI status, returning VERSION and
 /// the CCI data-length field.
 fn validate(bytes: &[u8]) -> Result<(u16, usize), MailboxError> {
@@ -131,14 +142,16 @@ fn validate(bytes: &[u8]) -> Result<(u16, usize), MailboxError> {
     }
     let version = u16::from_le_bytes([bytes[0], bytes[1]]);
     let cci = LocalCci::from(u32::from_le_bytes(bytes[4..8].try_into().expect("4-byte CCI slice")));
-    if !cci.cmd_complete() {
-        return Err(MailboxError::NotComplete);
-    }
+    // Terminal error/not-supported responses are valid even when they omit the
+    // command-complete bit, so classify them before requiring completion.
     if cci.error() {
         return Err(MailboxError::CommandError);
     }
     if cci.not_supported() {
         return Err(MailboxError::NotSupported);
+    }
+    if !cci.cmd_complete() {
+        return Err(MailboxError::NotComplete);
     }
     Ok((version, cci.data_len()))
 }
@@ -260,13 +273,16 @@ mod tests {
 
     #[test]
     fn rejects_error_cci() {
-        let buf = mailbox((1 << 31) | (1 << 30), &[]);
+        // A terminal error response may omit the command-complete bit; the
+        // error bit alone must still be classified as CommandError.
+        let buf = mailbox(1 << 30, &[]);
         assert_eq!(decode_version(&buf).unwrap_err(), MailboxError::CommandError);
     }
 
     #[test]
     fn rejects_not_supported_cci() {
-        let buf = mailbox((1 << 31) | (1 << 25), &[]);
+        // Likewise a terminal not-supported response may omit command-complete.
+        let buf = mailbox(1 << 25, &[]);
         assert_eq!(decode_version(&buf).unwrap_err(), MailboxError::NotSupported);
     }
 
@@ -287,6 +303,20 @@ mod tests {
         let mut buf = mailbox(cci_complete(16), &[]);
         buf[0..2].copy_from_slice(&0x0200u16.to_le_bytes());
         assert_eq!(decode_version(&buf).unwrap(), 0x0200);
+    }
+
+    #[test]
+    fn ffa_status_classifies_as_io() {
+        use crate::{Error, ErrorKind};
+        assert_eq!(MailboxError::FfaStatus(5).kind(), ErrorKind::Io);
+    }
+
+    #[test]
+    fn other_mailbox_errors_classify_as_invalid_data() {
+        use crate::{Error, ErrorKind};
+        assert_eq!(MailboxError::WrongLength(47).kind(), ErrorKind::InvalidData);
+        assert_eq!(MailboxError::NotComplete.kind(), ErrorKind::InvalidData);
+        assert_eq!(MailboxError::PayloadDecode.kind(), ErrorKind::InvalidData);
     }
 
     #[test]

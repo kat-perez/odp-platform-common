@@ -176,7 +176,7 @@ impl crate::Error for Error {
             Self::UnexpectedArgumentType(_) => crate::ErrorKind::UnexpectedResponse,
             Self::OperationFailed => crate::ErrorKind::Other,
             Self::InvalidData => crate::ErrorKind::InvalidData,
-            Self::Ucsi(_) => crate::ErrorKind::InvalidData,
+            Self::Ucsi(e) => crate::Error::kind(e),
         }
     }
 }

@@ -350,15 +350,15 @@ impl App {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        let [row0, row1, row2] = Layout::vertical([
+        let [top, bottom] = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(inner);
+        let [card_battery, card_thermal, card_ucsi] = Layout::horizontal([
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
             Constraint::Ratio(1, 3),
         ])
-        .areas(inner);
-        let [card00, card01] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row0);
-        let [card10, card11] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row1);
-        let [card20, _card21] = Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(row2);
+        .areas(top);
+        let [card_rtc, card_system] =
+            Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).areas(bottom);
 
         let bat = self.battery_state.read().expect("battery RwLock poisoned");
         let thm = self.thermal_state.read().expect("thermal RwLock poisoned");
@@ -366,11 +366,11 @@ impl App {
         let sys = self.system_state.read().expect("system RwLock poisoned");
         let ucsi = self.ucsi_state.read().expect("ucsi RwLock poisoned");
 
-        self.modules[0].render_card_power(&bat, card00, buf);
-        self.modules[1].render_card_thermal(&thm, card01, buf);
-        self.modules[2].render_card_rtc(&rtc, card10, buf);
-        self.modules[3].render_card_system(&sys, card11, buf);
-        self.modules[4].render_card_ucsi(&ucsi, card20, buf);
+        self.modules[0].render_card_power(&bat, card_battery, buf);
+        self.modules[1].render_card_thermal(&thm, card_thermal, buf);
+        self.modules[2].render_card_rtc(&rtc, card_rtc, buf);
+        self.modules[3].render_card_system(&sys, card_system, buf);
+        self.modules[4].render_card_ucsi(&ucsi, card_ucsi, buf);
     }
 }
 
@@ -555,5 +555,66 @@ impl SelectedTab {
             Self::TabSystem => tailwind::EMERALD,
             Self::TabUsbC => tailwind::CYAN,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{RtcState, TimerData};
+    use ratatui::{buffer::Buffer, layout::Rect};
+    use time_alarm_service_interface::AlarmTimerSeconds;
+
+    fn test_app(rtc: RtcState) -> App {
+        let (battery_tx, _battery_rx) = mpsc::channel();
+        let (thermal_tx, _thermal_rx) = mpsc::channel();
+        App::new(
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(rtc)),
+            Arc::new(RwLock::new(Default::default())),
+            Arc::new(RwLock::new(Default::default())),
+            battery_tx,
+            thermal_tx,
+            LogBuffer::new(),
+        )
+    }
+
+    /// Collect the buffer's rows as strings for text assertions.
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    /// At the minimum 80x24 terminal the dashboard must still show the RTC
+    /// card's AC and DC timer summaries alongside the USB-C card.
+    #[test]
+    fn dashboard_shows_rtc_timers_and_usbc_at_80x24() {
+        let mut rtc = RtcState::default();
+        rtc.timers = [
+            TimerData {
+                value: Some(Ok(AlarmTimerSeconds(30))),
+                ..Default::default()
+            },
+            TimerData {
+                value: Some(Ok(AlarmTimerSeconds(45))),
+                ..Default::default()
+            },
+        ];
+
+        let app = test_app(rtc);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        (&app).render(area, &mut buf);
+        let rows = rows(&buf);
+        let text = rows.join("\n");
+
+        let has_ac = rows.iter().any(|r| r.contains("AC") && r.contains("30s remaining"));
+        let has_dc = rows.iter().any(|r| r.contains("DC") && r.contains("45s remaining"));
+        assert!(has_ac, "AC timer summary not visible:\n{text}");
+        assert!(has_dc, "DC timer summary not visible:\n{text}");
+        let has_ucsi = rows.iter().any(|r| r.contains("UCSI") && r.contains("Pending"));
+        assert!(has_ucsi, "USB-C card body not visible:\n{text}");
     }
 }

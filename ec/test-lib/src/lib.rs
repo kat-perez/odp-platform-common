@@ -247,6 +247,12 @@ impl<T: RtcSource> RtcSource for Arc<T> {
     }
 }
 
+impl<T: UcsiSource> UcsiSource for Arc<T> {
+    fn get_snapshot(&self, connector: u8) -> Result<UcsiSnapshot, Self::Error> {
+        self.as_ref().get_snapshot(connector)
+    }
+}
+
 /// Fan threshold type
 pub enum Threshold {
     /// On threshold temperature
@@ -255,4 +261,22 @@ pub enum Threshold {
     Ramping,
     /// Max threshold temperature
     Max,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Arc<S>` must forward `UcsiSource`, matching the other source traits, so
+    /// a shared source can be used wherever a `UcsiSource` is required.
+    #[test]
+    fn arc_forwards_ucsi_source() {
+        fn snapshot_via<S: UcsiSource>(source: &S) -> Result<crate::ucsi::UcsiSnapshot, S::Error> {
+            source.get_snapshot(1)
+        }
+
+        let source = Arc::new(mock::Mock::new());
+        let snapshot = snapshot_via(&source).expect("mock snapshot");
+        assert_eq!(snapshot.version, 0x0120);
+    }
 }
