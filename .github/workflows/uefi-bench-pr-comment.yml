@@ -1,0 +1,155 @@
+# GitHub Actions: posts patina_boot benchmark results back to the originating
+# pull request.
+#
+# SPDX-License-Identifier: MIT
+#
+
+# This workflow triggers after the uefi-bench workflow has run. uefi-bench runs
+# in the pull request context, which is read-only for pull requests from forks,
+# so it uploads its results as an artifact instead of commenting. This workflow
+# runs in the base repository context, where it has pull-requests: write, and
+# renders the artifact into a single comment that is updated in place on each
+# push rather than appended to.
+#
+# The comment is a reviewer aid, not a gate. It shows each benchmark at the
+# base commit alongside the same benchmark on the pull request so that an
+# unexpected swing is visible during review. Changes smaller than the combined
+# run-to-run spread are labelled as such, because shared CI runners routinely
+# move these numbers by more than a real code change would.
+
+name: uefi-bench PR comment
+
+on:
+  workflow_run:
+    workflows: [uefi-bench]
+    types:
+      - completed
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  comment:
+    name: post results
+    runs-on: ubuntu-latest
+    # Only pull request runs have a comment to post to, and a failed bench run
+    # uploads no results worth rendering. uefi-bench already fails loudly in
+    # that case.
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: bench-results
+          path: bench-results/
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Get PR number
+        id: get-pr-number
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "pr_number=$(cat ./bench-results/NR)" >> "$GITHUB_OUTPUT"
+
+      - name: Render results table
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          # Bencher lines look like:
+          #   test connect_all/512 ... bench:  142019 cycles/iter (+/- 39534)
+          # Reduce both runs to name/value/unit/spread so they can be joined.
+          normalize() {
+            sed -nE 's@^test (.+) \.\.\. bench:[[:space:]]+([0-9]+) ([^ ]+) \(\+/- ([0-9]+)\)$@\1\t\2\t\3\t\4@p' "$1"
+          }
+
+          normalize ./bench-results/results-base.txt > base.tsv
+          normalize ./bench-results/results-head.txt > head.tsv
+
+          if [ ! -s head.tsv ]; then
+            echo "No benchmark lines could be parsed from the results artifact" >&2
+            exit 1
+          fi
+
+          {
+            echo '## patina_boot benchmarks'
+            echo
+            echo "Base commit vs. this pull request, measured at \`${HEAD_SHA}\`."
+            echo
+            echo '| Benchmark | Base | This PR | Change | Spread |'
+            echo '| --- | ---: | ---: | ---: | ---: |'
+          } > comment.md
+
+          # The unit travels with each value so that a benchmark quietly
+          # switching its measurement shows up instead of being compared as if
+          # the numbers were still commensurable.
+          awk -F'\t' '
+            NR == FNR {
+              bval[$1] = $2; bunit[$1] = $3; bvar[$1] = $4
+              next
+            }
+            {
+              name = $1; hval = $2; hunit = $3; hvar = $4
+              if (!(name in bval)) {
+                printf "| `%s` | — | %s %s | new | ± %s |\n", name, hval, hunit, hvar
+                next
+              }
+              if (bunit[name] != hunit) {
+                printf "| `%s` | %s %s | %s %s | unit changed | ± %s |\n", \
+                  name, bval[name], bunit[name], hval, hunit, hvar
+                next
+              }
+              diff = hval - bval[name]
+              pct = bval[name] > 0 ? diff / bval[name] * 100 : 0
+              change = sprintf("%+.1f%%", pct)
+              magnitude = diff < 0 ? -diff : diff
+              if (magnitude <= bvar[name] + hvar) {
+                change = change " (within spread)"
+              }
+              printf "| `%s` | %s %s | %s %s | %s | ± %s |\n", \
+                name, bval[name], bunit[name], hval, hunit, change, hvar
+            }
+          ' base.tsv head.tsv >> comment.md
+
+          {
+            echo
+            echo 'Informational only; this does not gate the merge. Shared CI'
+            echo 'runners are noisy, so treat a change marked "within spread"'
+            echo 'as no signal and confirm anything surprising locally with'
+            echo '`cargo bench --benches` before acting on it.'
+            echo
+            echo '<!--'
+            echo 'This comment is auto-generated by the uefi-bench workflow.'
+            echo 'Please do not edit it directly.'
+            echo
+            echo 'comment-tag: [uefi-bench]'
+            echo '-->'
+          } >> comment.md
+
+      - name: Find existing comment
+        id: find-comment
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ steps.get-pr-number.outputs.pr_number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: 'comment-tag: [uefi-bench]'
+
+      # An empty comment-id creates a new comment; a populated one replaces the
+      # previous results so the pull request keeps a single, current comment.
+      - name: Post results
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ steps.get-pr-number.outputs.pr_number }}
+          body-path: comment.md
+          edit-mode: replace
