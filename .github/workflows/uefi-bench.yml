@@ -84,7 +84,24 @@ jobs:
         run: |
           set -uo pipefail
           git checkout --quiet --detach "$BASE_SHA"
-          if cargo bench --benches -- --output-format bencher > base-output.txt 2>&1; then
+
+          # `cargo bench --benches` would also run the lib unittest target,
+          # which is libtest and rejects criterion's arguments. Name the bench
+          # targets explicitly so this works on any commit, including ones
+          # predating a given bench.
+          bench_args=()
+          while IFS= read -r name; do
+            bench_args+=(--bench "$name")
+          done < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].targets[] | select(.kind[] == "bench") | .name')
+
+          if [ "${#bench_args[@]}" -eq 0 ]; then
+            echo "Base commit $BASE_SHA defines no bench targets; reporting no baseline." >&2
+            : > "$RUNNER_TEMP/bench-results/results-base.txt"
+            exit 0
+          fi
+
+          if cargo bench "${bench_args[@]}" -- --output-format bencher > base-output.txt 2>&1; then
             grep '^test ' base-output.txt > "$RUNNER_TEMP/bench-results/results-base.txt" || true
           else
             echo "Base commit $BASE_SHA failed to benchmark; reporting no baseline." >&2
@@ -100,7 +117,21 @@ jobs:
         run: |
           set -euo pipefail
           git checkout --quiet --detach "$HEAD_SHA"
-          cargo bench --benches -- --output-format bencher | tee head-output.txt
+
+          # See the base step: name the bench targets rather than using
+          # --benches, which would also run the lib unittest target.
+          bench_args=()
+          while IFS= read -r name; do
+            bench_args+=(--bench "$name")
+          done < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].targets[] | select(.kind[] == "bench") | .name')
+
+          if [ "${#bench_args[@]}" -eq 0 ]; then
+            echo "No bench targets are defined in patina_boot" >&2
+            exit 1
+          fi
+
+          cargo bench "${bench_args[@]}" -- --output-format bencher | tee head-output.txt
           if ! grep '^test ' head-output.txt > "$RUNNER_TEMP/bench-results/results-head.txt"; then
             echo "No benchmark result lines found in the bench output" >&2
             exit 1
