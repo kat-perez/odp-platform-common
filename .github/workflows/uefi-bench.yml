@@ -36,10 +36,6 @@ jobs:
   bench:
     name: bench / patina_boot
     runs-on: ubuntu-latest
-    env:
-      # Written to by both bench runs. Kept outside the working tree so that
-      # switching commits between runs cannot disturb it.
-      RESULTS_DIR: ${{ runner.temp }}/bench-results
     steps:
       # Full history: the base commit must be present locally to check out and
       # benchmark it.
@@ -73,7 +69,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RESULTS_DIR"
+          # Both bench runs write here. Kept outside the working tree so that
+          # switching commits between runs cannot disturb it.
+          mkdir -p "$RUNNER_TEMP/bench-results"
 
       # The base commit may predate a benchmark, or fail to build for reasons
       # that are not this pull request's problem. A missing baseline is
@@ -87,11 +85,11 @@ jobs:
           set -uo pipefail
           git checkout --quiet --detach "$BASE_SHA"
           if cargo bench --benches -- --output-format bencher > base-output.txt 2>&1; then
-            grep '^test ' base-output.txt > "$RESULTS_DIR/results-base.txt" || true
+            grep '^test ' base-output.txt > "$RUNNER_TEMP/bench-results/results-base.txt" || true
           else
             echo "Base commit $BASE_SHA failed to benchmark; reporting no baseline." >&2
             sed -n '1,40p' base-output.txt >&2
-            : > "$RESULTS_DIR/results-base.txt"
+            : > "$RUNNER_TEMP/bench-results/results-base.txt"
           fi
 
       - name: Benchmark pull request
@@ -103,7 +101,7 @@ jobs:
           set -euo pipefail
           git checkout --quiet --detach "$HEAD_SHA"
           cargo bench --benches -- --output-format bencher | tee head-output.txt
-          if ! grep '^test ' head-output.txt > "$RESULTS_DIR/results-head.txt"; then
+          if ! grep '^test ' head-output.txt > "$RUNNER_TEMP/bench-results/results-head.txt"; then
             echo "No benchmark result lines found in the bench output" >&2
             exit 1
           fi
@@ -114,7 +112,7 @@ jobs:
           set -euo pipefail
           # The comment workflow is triggered by workflow_run and so cannot see
           # the pull request number. Carry it across in the artifact.
-          echo "${{ github.event.number }}" > "$RESULTS_DIR/NR"
+          echo "${{ github.event.number }}" > "$RUNNER_TEMP/bench-results/NR"
 
       - uses: actions/upload-artifact@v4
         with:
