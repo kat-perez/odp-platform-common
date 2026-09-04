@@ -40,6 +40,8 @@ readonly PERFORMANCE_ENABLED_MARKER='Patina Performance Config HOB: Enabled=1'
 
 readonly EXIT_USAGE=2
 
+readonly POSITIVE_INTEGER_PATTERN='^[1-9][0-9]*$'
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PARSER_WRAPPER="${script_dir}/fpdt_parser_any_platform.py"
 
@@ -64,13 +66,25 @@ out_dir=""
 timeout_seconds="${DEFAULT_TIMEOUT_SECONDS}"
 python_bin="python3"
 
+# Reading "$2" for a flag given without a value trips 'set -u', which reports a
+# bash error and exits 1 -- the code that means the capture itself failed.
+# Check for the value first so misuse stays distinguishable.
+require_value() {
+  local flag="$1" value="${2:-}"
+  if [ -z "$value" ]; then
+    echo "missing value for $flag" >&2
+    usage >&2
+    exit "$EXIT_USAGE"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --firmware-dir) firmware_dir="$2"; shift 2 ;;
-    --disk) disk_image="$2"; shift 2 ;;
-    --out-dir) out_dir="$2"; shift 2 ;;
-    --timeout) timeout_seconds="$2"; shift 2 ;;
-    --python) python_bin="$2"; shift 2 ;;
+    --firmware-dir) require_value "$1" "${2:-}"; firmware_dir="$2"; shift 2 ;;
+    --disk) require_value "$1" "${2:-}"; disk_image="$2"; shift 2 ;;
+    --out-dir) require_value "$1" "${2:-}"; out_dir="$2"; shift 2 ;;
+    --timeout) require_value "$1" "${2:-}"; timeout_seconds="$2"; shift 2 ;;
+    --python) require_value "$1" "${2:-}"; python_bin="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit "$EXIT_USAGE" ;;
   esac
@@ -79,6 +93,13 @@ done
 if [ -z "$firmware_dir" ] || [ -z "$disk_image" ] || [ -z "$out_dir" ]; then
   echo "--firmware-dir, --disk and --out-dir are all required" >&2
   usage >&2
+  exit "$EXIT_USAGE"
+fi
+
+# The timeout is only used in arithmetic after QEMU has started, so a bad value
+# would otherwise surface as a failed capture rather than as misuse.
+if ! [[ "$timeout_seconds" =~ $POSITIVE_INTEGER_PATTERN ]]; then
+  echo "--timeout must be a positive whole number of seconds: ${timeout_seconds}" >&2
   exit "$EXIT_USAGE"
 fi
 

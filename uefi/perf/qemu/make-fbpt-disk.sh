@@ -48,10 +48,21 @@ EOF
 build_dir=""
 disk_image=""
 
+# Reading "$2" for a flag given without a value trips 'set -u', which reports a
+# bash error and exits 1 instead of the usage exit code.
+require_value() {
+  local flag="$1" value="${2:-}"
+  if [ -z "$value" ]; then
+    echo "missing value for $flag" >&2
+    usage >&2
+    exit "$EXIT_USAGE"
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --build-dir) build_dir="$2"; shift 2 ;;
-    --out) disk_image="$2"; shift 2 ;;
+    --build-dir) require_value "$1" "${2:-}"; build_dir="$2"; shift 2 ;;
+    --out) require_value "$1" "${2:-}"; disk_image="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit "$EXIT_USAGE" ;;
   esac
