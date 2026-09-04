@@ -69,3 +69,53 @@ PublishPatinaPerformanceConfigHob: Patina Performance Config HOB: Enabled=1, Ena
 
 `Enabled=0` means the firmware was built without `PERF_TRACE_ENABLE` and will
 produce no performance records, even though it still boots normally.
+
+## Capturing firmware performance data
+
+Patina publishes a firmware basic boot performance table (FBPT) during boot.
+Reading it needs a UEFI Shell application, `FbptDump.efi`, which writes the
+table to its own volume; it is not part of a default build, so add
+`UefiTestingPkg/PerfTests/FbptDump/FbptDump.inf` to `QemuQ35Pkg.dsc` before
+building.
+
+Build a disk that boots to the shell and dumps the table, then run a capture:
+
+```sh
+./make-fbpt-disk.sh --build-dir <build>/X64 --out dump-disk.img
+./capture-fbpt.sh --firmware-dir <fw> --disk dump-disk.img --out-dir <results>
+```
+
+The guest powers itself off once the dump completes, so the capture ends on its
+own rather than on a timeout. The output directory receives the captured
+`FBPT.bin`, the boot log, the dump application's own output, and the parsed
+`fbpt.xml` / `fbpt.txt`.
+
+Capture fails with exit 1 if the firmware reports that measurement is disabled,
+if the guest never powers off, or if no table was written; exit 2 still means a
+setup problem.
+
+### Parsing
+
+Parsing needs `edk2-pytool-extensions`:
+
+```sh
+pip install edk2-pytool-extensions
+```
+
+`capture-fbpt.sh` invokes the parser through `fpdt_parser_any_platform.py`.
+The packaged `fpdt_parser` can read the live FPDT from a running Windows
+system, so it imports `windll` at module scope and builds its Windows
+firmware-table accessor unconditionally. Neither is used when parsing a
+captured binary, but both break the tool on Linux, which is where CI runs. The
+wrapper supplies the missing pieces and raises if a Windows-only path is ever
+actually reached.
+
+For a readable breakdown by module, feed the parsed XML to the report
+generator with a source tree to resolve GUIDs against:
+
+```sh
+perf_report_generator -i <results>/fbpt.xml -r report.html -s <patina-qemu>
+```
+
+Unmatched start records are expected when the guest powers off from the shell,
+since phases that would normally end at boot never complete.
