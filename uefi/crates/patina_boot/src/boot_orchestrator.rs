@@ -11,6 +11,7 @@
 //!
 //! SPDX-License-Identifier: MIT
 //!
+use core::convert::Infallible;
 use patina::{
     component::service::dxe_dispatch::DxeDispatch, error::EfiError, uefi::boot_services::StandardBootServices,
     uefi::runtime_services::StandardRuntimeServices,
@@ -43,7 +44,7 @@ use r_efi::efi;
 ///         runtime_services: &StandardRuntimeServices,
 ///         dxe_services: &dyn DxeDispatch,
 ///         image_handle: efi::Handle,
-///     ) -> Result<!, EfiError> {
+///     ) -> Result<Infallible, EfiError> {
 ///         // Custom boot flow...
 ///         // Return Err if all boot options are exhausted
 ///         Err(EfiError::NotFound)
@@ -72,5 +73,5 @@ pub trait BootOrchestrator: Send + Sync + 'static {
         runtime_services: &StandardRuntimeServices,
         dxe_services: &dyn DxeDispatch,
         image_handle: efi::Handle,
-    ) -> Result<!, EfiError>;
+    ) -> Result<Infallible, EfiError>;
 }
