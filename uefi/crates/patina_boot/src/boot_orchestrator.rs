@@ -65,8 +65,9 @@ pub trait BootOrchestrator: Send + Sync + 'static {
     ///
     /// A successful boot transfers control to the boot image and never returns.
     /// If all boot options are exhausted, the implementation returns
-    /// `Err(EfiError)`. The `Ok` variant is uninhabitable (`!`), enforcing at
-    /// the type level that this method can only "succeed" by not returning.
+    /// `Err(EfiError)`. The `Ok` variant is [`Infallible`], a type that has no
+    /// values, enforcing at the type level that this method can only "succeed"
+    /// by not returning.
     fn execute(
         &self,
         boot_services: &StandardBootServices,
