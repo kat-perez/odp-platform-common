@@ -47,7 +47,11 @@ on.
 | --------- | ------- |
 | 0 | The BDS entry marker appeared on the debug console. |
 | 1 | The firmware did not reach BDS before the timeout. |
-| 2 | Bad arguments, or a firmware image was missing. |
+| 2 | Bad arguments, or a required file or tool was missing. |
+
+`qemu-system-x86_64` is checked before the guest starts, so a missing emulator
+is reported as exit 2 up front instead of looking like a firmware that failed
+to reach BDS.
 
 The debug console log is written to `boot-debugcon.log` in the output
 directory and is the primary artifact to inspect on failure. The variable
