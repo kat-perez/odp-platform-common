@@ -94,6 +94,11 @@ Capture fails with exit 1 if the firmware reports that measurement is disabled,
 if the guest never powers off, or if no table was written; exit 2 still means a
 setup problem.
 
+`qemu-system-x86_64`, mtools and the parser dependency are all checked before
+the guest starts, so a missing tool is reported as exit 2 up front rather than
+surfacing as a shell error partway through a capture that has already taken
+minutes to run.
+
 ### Parsing
 
 Parsing needs `edk2-pytool-extensions`:

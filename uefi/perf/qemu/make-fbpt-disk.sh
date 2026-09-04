@@ -84,7 +84,7 @@ for binary in "$shell_efi" "$dump_efi"; do
   fi
 done
 
-for tool in mkfs.vfat mmd mcopy; do
+for tool in dd mkfs.vfat mmd mcopy mdir; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "required tool not found: $tool (install dosfstools and mtools)" >&2
     exit "$EXIT_USAGE"

@@ -42,6 +42,12 @@ readonly EXIT_USAGE=2
 
 readonly POSITIVE_INTEGER_PATTERN='^[1-9][0-9]*$'
 
+readonly QEMU_COMMAND=qemu-system-x86_64
+
+# The parser wrapper imports this; checking for it up front turns a missing
+# dependency into a setup error rather than a failure after a full boot.
+readonly PARSER_MODULE=edk2toolext.perf.fpdt_parser
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PARSER_WRAPPER="${script_dir}/fpdt_parser_any_platform.py"
 
@@ -113,6 +119,34 @@ for image in "$code_fd" "$vars_fd_source" "$disk_image"; do
   fi
 done
 
+# A missing tool would otherwise surface as "command not found" (127) or a
+# generic shell failure partway through a capture, neither of which the caller
+# can tell apart from a firmware that produced no performance data. Check
+# everything up front so setup problems stay reportable as such.
+for tool in "$QEMU_COMMAND" mtype mdir mcopy; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "required tool not found: $tool (install qemu-system-x86 and mtools)" >&2
+    exit "$EXIT_USAGE"
+  fi
+done
+
+if ! command -v "$python_bin" >/dev/null 2>&1; then
+  echo "python interpreter not found: ${python_bin}" >&2
+  exit "$EXIT_USAGE"
+fi
+
+# The parser is only invoked after a full boot, so an uninstalled dependency
+# would otherwise waste the whole capture before failing. Locate the module
+# without importing it: on Linux, executing it raises ImportError on ctypes
+# names that only exist on Windows, which is the very thing the wrapper exists
+# to paper over.
+if ! "$python_bin" -c \
+  "import importlib.util as u, sys; sys.exit(0 if u.find_spec('${PARSER_MODULE}') else 1)" \
+  >/dev/null 2>&1; then
+  echo "${python_bin} cannot find ${PARSER_MODULE}; install edk2-pytool-extensions" >&2
+  exit "$EXIT_USAGE"
+fi
+
 mkdir -p "$out_dir"
 boot_log="${out_dir}/capture-debugcon.log"
 
@@ -126,7 +160,7 @@ chmod u+w "$vars_fd" "$capture_disk"
 
 : > "$boot_log"
 
-qemu-system-x86_64 \
+"$QEMU_COMMAND" \
   -debugcon "file:${boot_log}" \
   -global "isa-debugcon.iobase=${DEBUGCON_IO_PORT}" \
   -global ICH9-LPC.disable_s3=1 \
