@@ -90,9 +90,29 @@ own rather than on a timeout. The output directory receives the captured
 `FBPT.bin`, the boot log, the dump application's own output, and the parsed
 `fbpt.xml` / `fbpt.txt`.
 
+Each capture finishes by printing the boot time in milliseconds, taken from the
+ACPI basic boot performance record:
+
+```text
+boot time (reset to OS loader handoff): 2642.295 ms
+  ResetEnd                         0.000 ms
+  OSLoaderLoadImageStart        2629.683 ms
+  OSLoaderStartImageStart       2642.295 ms
+```
+
+The summary deliberately stops there. The parser also emits per-phase records,
+but their millisecond values are not all on one time base in this firmware, so
+a PEI/DXE/BDS breakdown built from them would read as authoritative while being
+wrong. Use `fbpt.txt` or `fbpt.xml` when you need that detail. The summary can
+also be run on its own against an existing report:
+
+```sh
+python3 boot_time_summary.py <results>/fbpt.xml
+```
+
 Capture fails with exit 1 if the firmware reports that measurement is disabled,
-if the guest never powers off, or if no table was written; exit 2 still means a
-setup problem.
+if the guest never powers off, if the dump log cannot be read back off the
+disk, or if no table was written; exit 2 still means a setup problem.
 
 `qemu-system-x86_64`, mtools and the parser dependency are all checked before
 the guest starts, so a missing tool is reported as exit 2 up front rather than

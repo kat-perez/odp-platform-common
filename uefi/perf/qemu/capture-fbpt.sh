@@ -50,6 +50,7 @@ readonly PARSER_MODULE=edk2toolext.perf.fpdt_parser
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PARSER_WRAPPER="${script_dir}/fpdt_parser_any_platform.py"
+readonly BOOT_TIME_SUMMARY="${script_dir}/boot_time_summary.py"
 
 usage() {
   cat <<'EOF'
@@ -216,11 +217,21 @@ fi
 
 export MTOOLS_SKIP_CHECK=1
 
-if mtype -i "$capture_disk" "::/${SHELL_LOG_NAME}" >"${out_dir}/${SHELL_LOG_NAME}" 2>/dev/null; then
-  echo "dump application output: ${out_dir}/${SHELL_LOG_NAME}"
+# Redirecting straight onto the final path would create the log even when mtype
+# fails, and the marker check below would then blame the dump application for a
+# table it may well have written. Stage the extraction and install it only once
+# mtype has actually succeeded, so the two failures stay distinguishable.
+shell_log="${out_dir}/${SHELL_LOG_NAME}"
+shell_log_staging="${shell_log}.partial"
+if ! mtype -i "$capture_disk" "::/${SHELL_LOG_NAME}" >"$shell_log_staging" 2>/dev/null; then
+  rm -f "$shell_log_staging"
+  echo "FAIL: could not read ${SHELL_LOG_NAME} from the dump disk" >&2
+  exit 1
 fi
+mv "$shell_log_staging" "$shell_log"
+echo "dump application output: ${shell_log}"
 
-if ! grep -qF "$DUMP_SUCCESS_MARKER" "${out_dir}/${SHELL_LOG_NAME}" 2>/dev/null; then
+if ! grep -qF "$DUMP_SUCCESS_MARKER" "$shell_log" 2>/dev/null; then
   echo "FAIL: the dump application did not report writing a table" >&2
   exit 1
 fi
@@ -247,3 +258,7 @@ echo "captured table: ${fbpt_bin} ($(wc -c <"$fbpt_bin") bytes)"
 
 echo "PASS: captured firmware performance data"
 echo "parsed records: ${out_dir}/fbpt.xml, ${out_dir}/fbpt.txt"
+
+# The summary only needs the standard library, so it runs under the same
+# interpreter without requiring the parser package.
+"$python_bin" "$BOOT_TIME_SUMMARY" "${out_dir}/fbpt.xml"
