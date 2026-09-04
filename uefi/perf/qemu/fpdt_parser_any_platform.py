@@ -14,6 +14,19 @@ reach the Windows API raises rather than silently misbehaving.
 
 import ctypes
 import sys
+from typing import NoReturn
+
+WINDOWS_ONLY_HINT = (
+    "Reading the live FPDT requires Windows; pass a captured FBPT binary with "
+    "-b instead."
+)
+
+
+def _raise_windows_only(interface: str) -> NoReturn:
+    raise RuntimeError(
+        f"fpdt_parser reached the Windows-only interface '{interface}'. "
+        f"{WINDOWS_ONLY_HINT}"
+    )
 
 
 class WindowsOnlyApi:
@@ -22,17 +35,23 @@ class WindowsOnlyApi:
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
-    def __getattr__(self, name: str) -> None:
-        raise RuntimeError(
-            f"fpdt_parser reached the Windows-only interface '{name}'. Reading "
-            "the live FPDT requires Windows; pass a captured FBPT binary with "
-            "-b instead."
-        )
+    def __getattr__(self, name: str) -> NoReturn:
+        _raise_windows_only(name)
+
+
+def _windows_only_error(*args: object, **kwargs: object) -> NoReturn:
+    """Replaces ctypes.WinError, which returns an exception rather than raising.
+
+    Binding it to OSError would hand back a bare instance that the caller is
+    free to ignore, so a Windows-only path could keep running with nonsense
+    values instead of stopping.
+    """
+    _raise_windows_only("WinError")
 
 
 if not hasattr(ctypes, "windll"):
     ctypes.windll = WindowsOnlyApi()
-    ctypes.WinError = OSError
+    ctypes.WinError = _windows_only_error
 
 from edk2toolext.perf import fpdt_parser  # noqa: E402
 
