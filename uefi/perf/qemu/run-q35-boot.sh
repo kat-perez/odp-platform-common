@@ -46,6 +46,8 @@ readonly EXIT_USAGE=2
 
 readonly POSITIVE_INTEGER_PATTERN='^[1-9][0-9]*$'
 
+readonly QEMU_COMMAND=qemu-system-x86_64
+
 usage() {
   cat <<'EOF'
 Usage: run-q35-boot.sh --firmware-dir DIR [--timeout SECONDS] [--out-dir DIR]
@@ -98,6 +100,14 @@ fi
 code_fd="${firmware_dir}/QEMUQ35_CODE.fd"
 vars_fd_source="${firmware_dir}/QEMUQ35_VARS.fd"
 
+# A missing tool would otherwise surface as "command not found" (127) or a
+# generic shell failure, neither of which the caller can tell apart from
+# firmware that simply never reached BDS.
+if ! command -v "$QEMU_COMMAND" >/dev/null 2>&1; then
+  echo "required command not found: ${QEMU_COMMAND}" >&2
+  exit "$EXIT_USAGE"
+fi
+
 for image in "$code_fd" "$vars_fd_source"; do
   if [ ! -f "$image" ]; then
     echo "firmware image not found: $image" >&2
@@ -120,7 +130,7 @@ chmod u+w "$vars_fd"
 
 : > "$boot_log"
 
-qemu-system-x86_64 \
+"$QEMU_COMMAND" \
   -debugcon "file:${boot_log}" \
   -global "isa-debugcon.iobase=${DEBUGCON_IO_PORT}" \
   -global ICH9-LPC.disable_s3=1 \
